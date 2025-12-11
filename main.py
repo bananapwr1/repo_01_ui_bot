@@ -811,11 +811,21 @@ async def reset_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def run_telegram_bot(application: Application) -> None:
     logger.info("🚀 Starting Telegram bot...")
 
+    # Если на стороне Telegram остался webhook (частая причина "бот запущен, но polling не получает апдейты"),
+    # то принудительно снимаем его перед polling.
+    try:
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Webhook disabled (polling mode)")
+    except Exception as e:
+        # Не фейлим старт целиком: иногда delete_webhook может падать из-за сетевых/временных проблем.
+        logger.warning(f"⚠️ Could not delete webhook (continuing): {e}")
+
     await application.initialize()
     await application.start()
     await application.updater.start_polling(
         poll_interval=1.0,
         timeout=10,
+        allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
     )
 
