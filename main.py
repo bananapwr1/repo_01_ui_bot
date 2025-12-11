@@ -16,7 +16,9 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, filters, ContextTypes
 )
-from supabase import create_client, Client
+from supabase import create_client
+# ...
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 import pytz
