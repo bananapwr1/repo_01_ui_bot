@@ -1,8 +1,7 @@
+# repo_01_ui_bot/requirements.txt
 python-telegram-bot
 python-dotenv
 supabase-py
 cryptography
 fastapi
 uvicorn
-# SQLite встроен, но для совместимости с любым хостингом:
-# sqlite3
