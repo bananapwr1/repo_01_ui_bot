@@ -1,4 +1,5 @@
-httpx==0.24.0
-python-telegram-bot==20.3
-python-dotenv==1.0.0
-supabase>=2.0.0
+python-telegram-bot
+python-dotenv
+supabase-py
+cryptography # Для шифрования PO-логинов
+requests # Для простой работы с Supabase (Bot #1)
