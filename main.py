@@ -1,331 +1,875 @@
-# main.py (UI-Bot)
-import os
+"""main.py (Repo 01 UI Bot)
+
+ТЗ (критично):
+- Локальная SQLite для пользовательских профилей/состояний/админки/банов.
+- Supabase (только публичный ключ) — только для внешних таблиц (например, signal_requests).
+- Сложный UI/UX: меню/навигация через inline-кнопки, Back/Home всегда доступны.
+- "Умный" интерфейс: удаляем предыдущее UI-сообщение перед отправкой нового.
+- Мультиязычность (i18n).
+- Удалён YooKassa; добавлены заглушки крипто-платежей.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import logging
+import os
+from typing import Any, Dict, Optional
+
 import uvicorn
-from typing import Optional
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+)
 
-# Наши модули
-from user_db_handler import init_db, save_encrypted_credentials, get_encrypted_data_from_local_db
-from crypto_utils import encrypt_data
-# Импорт Supabase (для чтения user_signals и записи signal_requests)
-from supabase import create_client, Client
-from dotenv import load_dotenv
+from crypto_utils import encrypt_ssid
+from payments import check_crypto_payment_status, create_crypto_payment
+from supabase import Client, create_client
+from user_db_handler import (
+    ensure_user,
+    get_encrypted_data_from_local_db,
+    get_user_profile,
+    get_user_state,
+    init_db,
+    reset_user_data,
+    save_encrypted_credentials,
+    set_user_state,
+    update_user_profile,
+)
 
-# --- Настройка ---
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Переменные окружения для Supabase и Telegram
+
+# --- Env ---
 TELEGRAM_BOT_TOKEN_UI = os.getenv("TELEGRAM_BOT_TOKEN_UI")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+# ТЗ: SUPABASE_KEY (публичный ключ). Оставляем fallback на старое имя для совместимости.
+SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
 
-# Проверка наличия обязательных переменных
-if not SUPABASE_URL or not SUPABASE_KEY:
-    logger.error("🚫 SUPABASE_URL или SUPABASE_KEY не установлены!")
-    raise ValueError("Необходимо установить переменные окружения SUPABASE_URL и NEXT_PUBLIC_SUPABASE_ANON_KEY")
+ADMIN_USER_ID: Optional[int]
+try:
+    ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "").strip() or "0") or None
+except Exception:
+    ADMIN_USER_ID = None
 
-# Инициализация Supabase
-supabase: Optional[Client] = create_client(SUPABASE_URL, SUPABASE_KEY)
-# Инициализация локальной БД
+
+def _is_root_admin(user_id: int) -> bool:
+    return bool(ADMIN_USER_ID) and user_id == ADMIN_USER_ID
+
+
+# --- Supabase client (optional) ---
+supabase: Optional[Client] = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info("✅ Supabase client initialized")
+    except Exception as e:
+        logger.error(f"❌ Supabase init failed: {e}")
+        supabase = None
+
+
+# --- Local DB ---
 init_db()
 
-# --- 1. FastAPI API-сервер (Связь с Ядром Render) ---
+
+# --- i18n ---
+TRANSLATIONS: Dict[str, Dict[str, str]] = {
+    "ru": {
+        "banned": "🚫 Доступ ограничен. Обратитесь к администратору.",
+        "home_title": "🏠 Главный экран",
+        "home_profile": (
+            "<b>Профиль</b>\n"
+            "ID: <code>{user_id}</code>\n"
+            "Язык: <b>{language}</b>\n"
+            "Валюта: <b>{currency}</b>\n"
+            "Тариф: <b>{plan}</b>\n"
+            "PO: <b>{po_status}</b>\n"
+        ),
+        "po_set": "настроено",
+        "po_not_set": "не настроено",
+        "menu_title": "📋 Меню",
+        "plans_title": "💳 Тарифы",
+        "plans_body": "Ваш текущий тариф: <b>{plan}</b>\n\nВыберите тариф для апгрейда:",
+        "settings_title": "⚙️ Настройки",
+        "settings_body": "Язык: <b>{language}</b>\nВалюта: <b>{currency}</b>",
+        "nav_back": "⬅️ Назад",
+        "nav_home": "🏠 Домой",
+        "btn_menu": "📋 Меню",
+        "btn_signal": "📡 Сигнал",
+        "btn_plans": "💳 Тарифы",
+        "btn_settings": "⚙️ Настройки",
+        "btn_set_po": "🔐 Настроить PO",
+        "set_po_usage": "📝 Использование: /set_po <логин> <пароль>",
+        "set_po_saved": "✅ Данные PO зашифрованы и сохранены локально.",
+        "set_po_invalid": "❌ Проверьте логин/пароль (логин 3-100, пароль 6-100 символов).",
+        "encryption_error": "❌ Ошибка шифрования. Попробуйте позже.",
+        "db_error": "❌ Ошибка базы данных. Попробуйте позже.",
+        "signal_requires_plan": "🔒 Запрос сигналов доступен на тарифе Pro/VIP. Откройте «Тарифы».",
+        "signal_requires_po": "❌ Сначала настройте PO через /set_po.",
+        "signal_sent": "⏳ Запрос на сигнал отправлен. Ожидайте ответ от ядра.",
+        "signal_supabase_off": "⚠️ Supabase не настроен. Запрос сигналов временно недоступен.",
+        "plan_free": "Free",
+        "plan_pro": "Pro",
+        "plan_vip": "VIP",
+        "pay_created": (
+            "💳 Создан крипто-платёж для тарифа <b>{plan}</b>\n"
+            "Сумма: <b>{amount} {currency}</b>\n"
+            "Payment ID: <code>{payment_id}</code>\n\n"
+            "Ссылка на оплату: {pay_url}"
+        ),
+        "pay_check_pending": "⏳ Платёж пока не подтверждён. Попробуйте позже.",
+        "pay_check_paid": "✅ Платёж подтверждён! Тариф обновлён на <b>{plan}</b>.",
+        "admin_denied": "🚫 Команда доступна только ADMIN_USER_ID.",
+        "admin_help": (
+            "🛡️ <b>Admin</b>\n"
+            "/ban_user <id>\n"
+            "/unban_user <id>\n"
+            "/add_admin <id>\n"
+            "/remove_admin <id>\n"
+            "/reset_user <id>"
+        ),
+        "admin_done": "✅ Готово.",
+        "admin_bad_args": "❌ Неверные аргументы. Пример: /ban_user 123456",
+    },
+    "en": {
+        "banned": "🚫 Access restricted. Contact support.",
+        "home_title": "🏠 Home",
+        "home_profile": (
+            "<b>Profile</b>\n"
+            "ID: <code>{user_id}</code>\n"
+            "Language: <b>{language}</b>\n"
+            "Currency: <b>{currency}</b>\n"
+            "Plan: <b>{plan}</b>\n"
+            "PO: <b>{po_status}</b>\n"
+        ),
+        "po_set": "configured",
+        "po_not_set": "not configured",
+        "menu_title": "📋 Menu",
+        "plans_title": "💳 Plans",
+        "plans_body": "Current plan: <b>{plan}</b>\n\nChoose a plan to upgrade:",
+        "settings_title": "⚙️ Settings",
+        "settings_body": "Language: <b>{language}</b>\nCurrency: <b>{currency}</b>",
+        "nav_back": "⬅️ Back",
+        "nav_home": "🏠 Home",
+        "btn_menu": "📋 Menu",
+        "btn_signal": "📡 Signal",
+        "btn_plans": "💳 Plans",
+        "btn_settings": "⚙️ Settings",
+        "btn_set_po": "🔐 Configure PO",
+        "set_po_usage": "Usage: /set_po <login> <password>",
+        "set_po_saved": "✅ PO credentials encrypted & saved locally.",
+        "set_po_invalid": "❌ Check login/password length.",
+        "encryption_error": "❌ Encryption error. Try again later.",
+        "db_error": "❌ Database error. Try again later.",
+        "signal_requires_plan": "🔒 Signals require Pro/VIP. Open Plans.",
+        "signal_requires_po": "❌ Configure PO first via /set_po.",
+        "signal_sent": "⏳ Signal request sent. Please wait.",
+        "signal_supabase_off": "⚠️ Supabase not configured. Signals are unavailable.",
+        "plan_free": "Free",
+        "plan_pro": "Pro",
+        "plan_vip": "VIP",
+        "pay_created": (
+            "💳 Crypto payment created for <b>{plan}</b>\n"
+            "Amount: <b>{amount} {currency}</b>\n"
+            "Payment ID: <code>{payment_id}</code>\n\n"
+            "Pay URL: {pay_url}"
+        ),
+        "pay_check_pending": "⏳ Payment is still pending. Try later.",
+        "pay_check_paid": "✅ Payment confirmed! Plan updated to <b>{plan}</b>.",
+        "admin_denied": "🚫 This command is restricted to ADMIN_USER_ID.",
+        "admin_help": (
+            "🛡️ <b>Admin</b>\n"
+            "/ban_user <id>\n"
+            "/unban_user <id>\n"
+            "/add_admin <id>\n"
+            "/remove_admin <id>\n"
+            "/reset_user <id>"
+        ),
+        "admin_done": "✅ Done.",
+        "admin_bad_args": "❌ Bad args. Example: /ban_user 123456",
+    },
+}
+
+
+def tr(lang: str, key: str, **kwargs: Any) -> str:
+    table = TRANSLATIONS.get(lang) or TRANSLATIONS["ru"]
+    template = table.get(key) or TRANSLATIONS["ru"].get(key) or key
+    try:
+        return template.format(**kwargs)
+    except Exception:
+        return template
+
+
+# --- UI helpers ---
+async def _ensure_not_banned(user_id: int) -> bool:
+    profile = await get_user_profile(user_id)
+    if profile.get("is_banned") and not _is_root_admin(user_id):
+        return False
+    return True
+
+
+async def _delete_message_safe(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int) -> None:
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+
+async def send_ui(
+    *,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    chat_id: int,
+    text: str,
+    keyboard: Optional[InlineKeyboardMarkup] = None,
+) -> None:
+    """Удаляет предыдущее UI-сообщение и отправляет новое."""
+    profile = await get_user_profile(user_id)
+    last_chat_id = profile.get("last_ui_chat_id")
+    last_message_id = profile.get("last_ui_message_id")
+
+    if last_chat_id and last_message_id:
+        await _delete_message_safe(context, int(last_chat_id), int(last_message_id))
+
+    msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode="HTML",
+        reply_markup=keyboard,
+        disable_web_page_preview=True,
+    )
+    await update_user_profile(user_id, last_ui_chat_id=chat_id, last_ui_message_id=msg.message_id)
+
+
+async def _nav_stack(user_id: int) -> list[str]:
+    stack = await get_user_state(user_id, "nav_stack", default=[])
+    return stack if isinstance(stack, list) else []
+
+
+async def _current_screen(user_id: int) -> str:
+    cur = await get_user_state(user_id, "current_screen", default="home")
+    return cur if isinstance(cur, str) else "home"
+
+
+async def show_screen(
+    *,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    chat_id: int,
+    screen: str,
+    push_current: bool = True,
+    clear_stack: bool = False,
+) -> None:
+    await ensure_user(user_id)
+
+    if not await _ensure_not_banned(user_id):
+        profile = await get_user_profile(user_id)
+        await send_ui(
+            context=context,
+            user_id=user_id,
+            chat_id=chat_id,
+            text=tr(profile.get("language", "ru"), "banned"),
+            keyboard=None,
+        )
+        return
+
+    if clear_stack:
+        await set_user_state(user_id, "nav_stack", [])
+
+    cur = await _current_screen(user_id)
+    if push_current and screen != cur:
+        stack = await _nav_stack(user_id)
+        stack.append(cur)
+        await set_user_state(user_id, "nav_stack", stack[-20:])
+
+    await set_user_state(user_id, "current_screen", screen)
+
+    text, kb = await render_screen(user_id=user_id, screen=screen)
+    await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=text, keyboard=kb)
+
+
+def _nav_kb(lang: str, show_back: bool, show_home: bool) -> list[list[InlineKeyboardButton]]:
+    row: list[InlineKeyboardButton] = []
+    if show_back:
+        row.append(InlineKeyboardButton(tr(lang, "nav_back"), callback_data="nav:back"))
+    if show_home:
+        row.append(InlineKeyboardButton(tr(lang, "nav_home"), callback_data="nav:home"))
+    return [row] if row else []
+
+
+async def render_screen(*, user_id: int, screen: str) -> tuple[str, InlineKeyboardMarkup]:
+    profile = await get_user_profile(user_id)
+    lang = profile.get("language", "ru")
+    plan = profile.get("plan", "free")
+
+    stack = await _nav_stack(user_id)
+    show_back = len(stack) > 0 and screen != "home"
+    show_home = screen != "home"
+
+    if screen == "home":
+        creds = await get_encrypted_data_from_local_db(user_id)
+        po_status = tr(lang, "po_set") if creds else tr(lang, "po_not_set")
+
+        text = f"<b>{tr(lang, 'home_title')}</b>\n\n" + tr(
+            lang,
+            "home_profile",
+            user_id=user_id,
+            language=profile.get("language", "ru"),
+            currency=profile.get("currency", "USD"),
+            plan=plan,
+            po_status=po_status,
+        )
+
+        kb = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton(tr(lang, "btn_menu"), callback_data="nav:menu")],
+                [InlineKeyboardButton(tr(lang, "btn_signal"), callback_data="action:signal")],
+                [InlineKeyboardButton(tr(lang, "btn_plans"), callback_data="nav:plans")],
+                [InlineKeyboardButton(tr(lang, "btn_settings"), callback_data="nav:settings")],
+            ]
+        )
+        return text, kb
+
+    if screen == "menu":
+        text = f"<b>{tr(lang, 'menu_title')}</b>"
+        kb_rows = [
+            [InlineKeyboardButton(tr(lang, "btn_signal"), callback_data="action:signal")],
+            [InlineKeyboardButton(tr(lang, "btn_plans"), callback_data="nav:plans")],
+            [InlineKeyboardButton(tr(lang, "btn_settings"), callback_data="nav:settings")],
+        ]
+        kb_rows.extend(_nav_kb(lang, show_back, show_home))
+        return text, InlineKeyboardMarkup(kb_rows)
+
+    if screen == "plans":
+        text = f"<b>{tr(lang, 'plans_title')}</b>\n\n" + tr(lang, "plans_body", plan=plan)
+        kb_rows = [
+            [InlineKeyboardButton(tr(lang, "plan_free"), callback_data="plan:select:free")],
+            [InlineKeyboardButton(tr(lang, "plan_pro"), callback_data="plan:select:pro")],
+            [InlineKeyboardButton(tr(lang, "plan_vip"), callback_data="plan:select:vip")],
+        ]
+        kb_rows.extend(_nav_kb(lang, show_back, show_home))
+        return text, InlineKeyboardMarkup(kb_rows)
+
+    if screen == "settings":
+        text = f"<b>{tr(lang, 'settings_title')}</b>\n\n" + tr(
+            lang, "settings_body", language=profile.get("language", "ru"), currency=profile.get("currency", "USD")
+        )
+        kb_rows = [
+            [
+                InlineKeyboardButton("RU", callback_data="set:lang:ru"),
+                InlineKeyboardButton("EN", callback_data="set:lang:en"),
+            ],
+            [
+                InlineKeyboardButton("USD", callback_data="set:currency:USD"),
+                InlineKeyboardButton("EUR", callback_data="set:currency:EUR"),
+                InlineKeyboardButton("RUB", callback_data="set:currency:RUB"),
+            ],
+        ]
+        kb_rows.extend(_nav_kb(lang, show_back, show_home))
+        return text, InlineKeyboardMarkup(kb_rows)
+
+    # fallback
+    text = f"<b>{tr(lang, 'home_title')}</b>"
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(tr(lang, "nav_home"), callback_data="nav:home")]])
+    return text, kb
+
+
+# --- Supabase integration (external) ---
+async def create_signal_request(user_id: int) -> bool:
+    if not supabase:
+        return False
+    # Внешние данные (не профиль пользователя)
+    supabase.table("signal_requests").insert(
+        {"user_id": user_id, "request_type": "latest_signal", "status": "pending"}
+    ).execute()
+    return True
+
+
+# --- FastAPI (core <-> UI bot) ---
 api_app = FastAPI(
     title="UI Bot API for Trading Core",
     description="API для связи UI-бота с Ядром Анализа",
-    version="1.0.0"
+    version="1.1.0",
 )
 
-# Модель данных для входящего запроса от Ядра Render
+
 class CoreRequest(BaseModel):
     user_id: int
     request_source: str
 
+
 @api_app.get("/")
-async def root():
-    """Корневой эндпоинт - healthcheck."""
+async def root() -> Dict[str, Any]:
     return {
         "status": "ok",
         "service": "UI Bot API",
-        "version": "1.0.0",
-        "endpoints": {
-            "health": "/health",
-            "credentials": "/get_po_credentials"
-        }
+        "version": "1.1.0",
+        "endpoints": {"health": "/health", "credentials": "/get_po_credentials"},
     }
 
+
 @api_app.get("/health")
-async def health_check():
-    """Проверка здоровья сервиса."""
-    try:
-        # Проверка подключения к Supabase
-        supabase.table("signal_requests").select("id").limit(1).execute()
-        supabase_status = "connected"
-    except Exception as e:
-        logger.error(f"Supabase health check failed: {e}")
-        supabase_status = "disconnected"
-    
+async def health_check() -> Dict[str, Any]:
+    supabase_status = "not_configured"
+    if supabase:
+        try:
+            supabase.table("signal_requests").select("id").limit(1).execute()
+            supabase_status = "connected"
+        except Exception as e:
+            logger.error(f"Supabase health check failed: {e}")
+            supabase_status = "disconnected"
+
     return {
         "status": "healthy",
         "telegram_bot": "configured" if TELEGRAM_BOT_TOKEN_UI else "not_configured",
         "supabase": supabase_status,
-        "encryption": "enabled"
+        "encryption": "enabled" if os.getenv("ENCRYPTION_KEY") else "not_configured",
+        "sqlite_db": "enabled",
     }
 
+
 @api_app.post("/get_po_credentials")
-async def get_po_credentials_endpoint(request_data: CoreRequest):
-    """
-    Эндпоинт, который Ядро Render использует для получения зашифрованных данных PO.
-    
-    Args:
-        request_data: Запрос с user_id и source
-        
-    Returns:
-        Зашифрованные учетные данные пользователя
-    """
+async def get_po_credentials_endpoint(request_data: CoreRequest) -> Dict[str, Any]:
     user_id = request_data.user_id
     request_source = request_data.request_source
-    
+
     logger.info(f"📥 Credential request for user {user_id} from {request_source}")
-    
-    # Базовая проверка источника запроса
+
     if request_source not in ["trading_core", "render_core", "admin"]:
-        logger.warning(f"⚠️ Unknown request source: {request_source}")
         raise HTTPException(status_code=403, detail="Unknown request source")
 
-    try:
-        encrypted_creds = await get_encrypted_data_from_local_db(user_id) 
-        
-        if not encrypted_creds:
-            logger.warning(f"⚠️ Credentials not found for user {user_id}")
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Credentials not found for user {user_id}"
-            )
-        
-        logger.info(f"✅ Credentials retrieved for user {user_id}")
-        
-        return {
-            "status": "success",
-            "user_id": user_id,
-            "login_enc": encrypted_creds['login_enc'],
-            "password_enc": encrypted_creds['password_enc']
-        }
+    encrypted_creds = await get_encrypted_data_from_local_db(user_id)
+    if not encrypted_creds:
+        raise HTTPException(status_code=404, detail=f"Credentials not found for user {user_id}")
 
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        logger.error(f"❌ DB Error for user {user_id}: {e}")
-        raise HTTPException(status_code=500, detail="Internal database error")
+    return {
+        "status": "success",
+        "user_id": user_id,
+        "login_enc": encrypted_creds["login_enc"],
+        "password_enc": encrypted_creds["password_enc"],
+    }
 
 
-# --- 2. Telegram Bot Логика (Пользовательский интерфейс) ---
-
+# --- Telegram commands ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает команду /start."""
-    await update.message.reply_text(
-        "👋 Добро пожаловать! Я — Ваш торговый бот. Используйте /set_po для настройки Pocket Option или /signal для запроса сигнала."
-    )
+    user_id = update.effective_user.id
+    await ensure_user(user_id)
+    if _is_root_admin(user_id):
+        await update_user_profile(user_id, is_admin=1)
+
+    chat_id = update.effective_chat.id
+
+    # Удаляем команду /start для "чистого" UI
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+
+    await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="home", push_current=False, clear_stack=True)
+
+
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+    await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="menu")
+
+
+async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+    await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="plans")
+
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+    await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="settings")
+
 
 async def set_po_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Начинает процесс сохранения учетных данных PO."""
-    # Пример простой обработки
-    if context.args and len(context.args) == 2:
-        login = context.args[0]
-        password = context.args[1]
-        user_id = update.effective_user.id
-        
-        # Проверка валидности данных
-        if len(login) < 3 or len(login) > 100:
-            await update.message.reply_text("❌ Логин должен быть от 3 до 100 символов.")
-            return
-        
-        if len(password) < 6 or len(password) > 100:
-            await update.message.reply_text("❌ Пароль должен быть от 6 до 100 символов.")
-            return
-        
-        # 1. Шифрование
-        try:
-            login_enc = encrypt_data(login)
-            password_enc = encrypt_data(password)
-            
-            if not login_enc or not password_enc:
-                await update.message.reply_text("❌ Ошибка шифрования. Обратитесь к администратору.")
-                return
-        except Exception as e:
-            logger.error(f"Encryption error for user {user_id}: {e}")
-            await update.message.reply_text("❌ Ошибка при шифровании данных.")
-            return
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    profile = await get_user_profile(user_id)
+    lang = profile.get("language", "ru")
 
-        # 2. Сохранение в локальной БД (только зашифрованные данные)
-        try:
-            await save_encrypted_credentials(user_id, login_enc, password_enc)
-            await update.message.reply_text("✅ Ваши данные Pocket Option зашифрованы и сохранены локально.")
-            logger.info(f"✅ User {user_id} credentials saved successfully")
-        except Exception as e:
-            logger.error(f"Database error for user {user_id}: {e}")
-            await update.message.reply_text("❌ Ошибка при сохранении данных. Попробуйте позже.")
-    else:
-        await update.message.reply_text(
-            "📝 Использование: /set_po [логин] [пароль]\n\n"
-            "⚠️ *Внимание*: Не используйте реальные данные для тестирования!\n"
-            "Пример: /set_po test_login test_password"
-        )
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+
+    if not context.args or len(context.args) != 2:
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "set_po_usage"))
+        return
+
+    login, password = context.args[0], context.args[1]
+    if len(login) < 3 or len(login) > 100 or len(password) < 6 or len(password) > 100:
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "set_po_invalid"))
+        return
+
+    login_enc = encrypt_ssid(login)
+    password_enc = encrypt_ssid(password)
+    if not login_enc or not password_enc:
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "encryption_error"))
+        return
+
+    try:
+        await save_encrypted_credentials(user_id, login_enc, password_enc)
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "set_po_saved"))
+    except Exception as e:
+        logger.error(f"DB error saving credentials for user {user_id}: {e}")
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "db_error"))
 
 
 async def request_signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает команду /signal (запрос к Ядру Render через Supabase)."""
     user_id = update.effective_user.id
-    
-    # Проверка, есть ли сохраненные учетные данные
-    try:
-        credentials = await get_encrypted_data_from_local_db(user_id)
-        if not credentials:
-            await update.message.reply_text(
-                "❌ Учетные данные Pocket Option не найдены.\n"
-                "Используйте команду /set_po для их сохранения."
-            )
-            return
-    except Exception as e:
-        logger.error(f"❌ Error checking credentials for user {user_id}: {e}")
-        await update.message.reply_text("❌ Ошибка при проверке учетных данных.")
+    chat_id = update.effective_chat.id
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+    await _handle_signal(user_id=user_id, chat_id=chat_id, context=context)
+
+
+# --- Callback handler ---
+async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query:
         return
-    
-    try:
-        # Запись запроса в таблицу signal_requests (Supabase)
-        response = supabase.table("signal_requests").insert({
-            'user_id': user_id,
-            'request_type': 'latest_signal',
-            'status': 'pending'
-        }).execute()
-        
-        logger.info(f"✅ Signal request created for user {user_id}")
-        
-        await update.message.reply_text(
-            "⏳ Запрос на сигнал отправлен!\n\n"
-            "Ядро Анализа (Render) обработает его в ближайшее время.\n"
-            "Вы получите уведомление, когда сигнал будет готов."
-        )
-        
-    except Exception as e:
-        logger.error(f"❌ Supabase error for user {user_id}: {e}")
-        await update.message.reply_text(
-            "❌ Ошибка при отправке запроса в базу данных.\n"
-            "Попробуйте позже или обратитесь к администратору."
-        )
 
-
-async def run_telegram_bot(application: Application):
-    """Запускает Telegram-бот в асинхронном режиме."""
-    try:
-        logger.info("🚀 Запуск Telegram-бота в асинхронном режиме...")
-        
-        # 1. Инициализация приложения
-        await application.initialize()
-        
-        # 2. Запуск бота (начало polling)
-        await application.start()
-        await application.updater.start_polling(
-            poll_interval=1.0,
-            timeout=10,
-            drop_pending_updates=True
-        )
-        
-        logger.info("✅ Telegram-бот успешно запущен и работает")
-        
-        # 3. Бесконечный цикл для поддержания работы бота
-        try:
-            while True:
-                await asyncio.sleep(60)  # Спим 60 секунд, чтобы не тратить CPU
-        finally:
-            # 4. Корректная остановка при завершении
-            logger.info("🛑 Остановка Telegram-бота...")
-            await application.updater.stop()
-            await application.stop()
-            await application.shutdown()
-            logger.info("✅ Telegram-бот остановлен")
-            
-    except Exception as e:
-        logger.error(f"❌ Ошибка при запуске Telegram-бота: {e}")
-        raise
-
-
-# --- 3. Объединение и Запуск ---
-
-async def main():
-    """Главная асинхронная функция, запускающая оба процесса."""
-    logger.info("="*60)
-    logger.info("🚀 Запуск UI-Бота (Telegram + API Server)...")
-    logger.info("="*60)
-    
-    # Вывод информации о конфигурации
-    logger.info(f"📡 API Server: http://0.0.0.0:{os.getenv('PORT', 8000)}")
-    logger.info(f"🤖 Telegram Bot: {'Configured' if TELEGRAM_BOT_TOKEN_UI else 'Not configured'}")
-    logger.info(f"🗄️ Supabase: {'Connected' if SUPABASE_URL and SUPABASE_KEY else 'Not configured'}")
-    logger.info(f"🔐 Encryption: {'Enabled' if os.getenv('ENCRYPTION_KEY') else 'Disabled'}")
-    logger.info("="*60)
+    user_id = query.from_user.id
+    chat_id = query.message.chat_id if query.message else user_id
 
     try:
-        # 1. Инициализация Telegram Application и регистрация обработчиков
-        if not TELEGRAM_BOT_TOKEN_UI:
-            logger.error("🚫 TELEGRAM_BOT_TOKEN_UI не задан. Бот не будет запущен.")
-            raise ValueError("TELEGRAM_BOT_TOKEN_UI не установлен")
-        
-        logger.info("🤖 Инициализация Telegram-бота...")
-        application = Application.builder().token(TELEGRAM_BOT_TOKEN_UI).build()
-        
-        # Регистрация обработчиков команд
-        application.add_handler(CommandHandler("start", start_command))
-        application.add_handler(CommandHandler("set_po", set_po_command))
-        application.add_handler(CommandHandler("signal", request_signal_command))
-        logger.info("✅ Обработчики команд зарегистрированы")
-        
-        # 2. Запуск Telegram Bot как асинхронной задачи
-        logger.info("🔄 Запуск Telegram-бота...")
-        telegram_task = asyncio.create_task(run_telegram_bot(application))
-        
-        # 3. Настройка и запуск FastAPI (uvicorn)
-        # При деплое на Bothost, порт может быть задан хостингом (обычно PORT=8000)
-        port = int(os.getenv("PORT", 8000))
-        logger.info(f"🔄 Запуск API-сервера на порту {port}...")
-        
-        config = uvicorn.Config(
-            api_app, 
-            host="0.0.0.0", 
-            port=port, 
-            log_level="info",
-            access_log=True
-        )
-        server = uvicorn.Server(config)
-        
-        api_task = asyncio.create_task(server.serve())
-        
-        logger.info("✅ Все сервисы запущены успешно!")
-        logger.info("="*60)
+        await query.answer()
+    except Exception:
+        pass
 
-        # Ждем, пока оба процесса работают
-        await asyncio.gather(telegram_task, api_task)
-        
+    data = query.data or ""
+
+    # Удаляем сообщение, по которому кликнули (доп. чистота UI)
+    if query.message:
+        await _delete_message_safe(context, chat_id, query.message.message_id)
+
+    if data == "nav:home":
+        await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="home", push_current=False, clear_stack=True)
+        return
+
+    if data == "nav:back":
+        stack = await _nav_stack(user_id)
+        if stack:
+            prev = stack.pop()
+            await set_user_state(user_id, "nav_stack", stack)
+            await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen=prev, push_current=False)
+        else:
+            await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="home", push_current=False, clear_stack=True)
+        return
+
+    if data.startswith("nav:"):
+        screen = data.split(":", 1)[1]
+        if screen in {"menu", "plans", "settings", "home"}:
+            await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen=screen)
+        return
+
+    if data == "action:signal":
+        await _handle_signal(user_id=user_id, chat_id=chat_id, context=context)
+        return
+
+    if data.startswith("set:lang:"):
+        lang = data.split(":", 2)[2]
+        if lang in TRANSLATIONS:
+            await update_user_profile(user_id, language=lang)
+        await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="settings", push_current=False)
+        return
+
+    if data.startswith("set:currency:"):
+        currency = data.split(":", 2)[2]
+        if currency in {"USD", "EUR", "RUB"}:
+            await update_user_profile(user_id, currency=currency)
+        await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="settings", push_current=False)
+        return
+
+    if data.startswith("plan:select:"):
+        plan = data.split(":", 2)[2]
+        profile = await get_user_profile(user_id)
+        lang = profile.get("language", "ru")
+
+        if plan == "free":
+            await update_user_profile(user_id, plan="free")
+            await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="plans", push_current=False)
+            return
+
+        amount = 10.0 if plan == "pro" else 25.0
+        payment = create_crypto_payment(user_id=user_id, plan=plan, amount=amount, currency="USDT")
+        await set_user_state(
+            user_id,
+            "pending_payment",
+            {"payment_id": payment.payment_id, "plan": plan, "amount": amount, "currency": payment.currency},
+        )
+
+        kb = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("✅ I paid / Проверить", callback_data=f"plan:check:{payment.payment_id}")],
+                *(_nav_kb(lang, show_back=True, show_home=True)),
+            ]
+        )
+        await send_ui(
+            context=context,
+            user_id=user_id,
+            chat_id=chat_id,
+            text=tr(
+                lang,
+                "pay_created",
+                plan=plan.upper(),
+                amount=amount,
+                currency=payment.currency,
+                payment_id=payment.payment_id,
+                pay_url=payment.pay_url,
+            ),
+            keyboard=kb,
+        )
+        return
+
+    if data.startswith("plan:check:"):
+        payment_id = data.split(":", 2)[2]
+        pending = await get_user_state(user_id, "pending_payment", default=None)
+        profile = await get_user_profile(user_id)
+        lang = profile.get("language", "ru")
+
+        status = check_crypto_payment_status(payment_id)
+        if status == "paid" and isinstance(pending, dict) and pending.get("payment_id") == payment_id:
+            plan = pending.get("plan", "pro")
+            await update_user_profile(user_id, plan=plan)
+            await set_user_state(user_id, "pending_payment", None)
+            await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "pay_check_paid", plan=plan.upper()))
+        else:
+            await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "pay_check_pending"))
+        return
+
+
+async def _handle_signal(*, user_id: int, chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    profile = await get_user_profile(user_id)
+    lang = profile.get("language", "ru")
+    plan = profile.get("plan", "free")
+
+    if plan not in {"pro", "vip"}:
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "signal_requires_plan"))
+        return
+
+    creds = await get_encrypted_data_from_local_db(user_id)
+    if not creds:
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "signal_requires_po"))
+        return
+
+    if not supabase:
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "signal_supabase_off"))
+        return
+
+    try:
+        await asyncio.to_thread(lambda: None)  # микроyield для гладкости UI
+        ok = await create_signal_request(user_id)
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "signal_sent" if ok else "signal_supabase_off"))
     except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}")
-        raise
+        logger.error(f"Signal request error for user {user_id}: {e}")
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "signal_supabase_off"))
+
+
+# --- Admin commands (root-only) ---
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    profile = await get_user_profile(user_id)
+    lang = profile.get("language", "ru")
+
+    if not _is_root_admin(user_id):
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_denied"))
+        return
+
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+
+    await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_help"))
+
+
+def _parse_target_id(context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
+    try:
+        if not context.args:
+            return None
+        return int(str(context.args[0]).strip())
+    except Exception:
+        return None
+
+
+async def ban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    profile = await get_user_profile(user_id)
+    lang = profile.get("language", "ru")
+
+    if not _is_root_admin(user_id):
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_denied"))
+        return
+
+    target_id = _parse_target_id(context)
+    if not target_id:
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_bad_args"))
+        return
+
+    await ensure_user(target_id)
+    await update_user_profile(target_id, is_banned=1)
+    await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_done"))
+
+
+async def unban_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    profile = await get_user_profile(user_id)
+    lang = profile.get("language", "ru")
+
+    if not _is_root_admin(user_id):
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_denied"))
+        return
+
+    target_id = _parse_target_id(context)
+    if not target_id:
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_bad_args"))
+        return
+
+    await ensure_user(target_id)
+    await update_user_profile(target_id, is_banned=0)
+    await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_done"))
+
+
+async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    profile = await get_user_profile(user_id)
+    lang = profile.get("language", "ru")
+
+    if not _is_root_admin(user_id):
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_denied"))
+        return
+
+    target_id = _parse_target_id(context)
+    if not target_id:
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_bad_args"))
+        return
+
+    await ensure_user(target_id)
+    await update_user_profile(target_id, is_admin=1)
+    await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_done"))
+
+
+async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    profile = await get_user_profile(user_id)
+    lang = profile.get("language", "ru")
+
+    if not _is_root_admin(user_id):
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_denied"))
+        return
+
+    target_id = _parse_target_id(context)
+    if not target_id:
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_bad_args"))
+        return
+
+    await ensure_user(target_id)
+    await update_user_profile(target_id, is_admin=0)
+    await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_done"))
+
+
+async def reset_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    profile = await get_user_profile(user_id)
+    lang = profile.get("language", "ru")
+
+    if not _is_root_admin(user_id):
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_denied"))
+        return
+
+    target_id = _parse_target_id(context)
+    if not target_id:
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_bad_args"))
+        return
+
+    await reset_user_data(target_id)
+    await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_done"))
+
+
+# --- Runner ---
+async def run_telegram_bot(application: Application) -> None:
+    logger.info("🚀 Starting Telegram bot...")
+
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(
+        poll_interval=1.0,
+        timeout=10,
+        drop_pending_updates=True,
+    )
+
+    try:
+        while True:
+            await asyncio.sleep(60)
+    finally:
+        logger.info("🛑 Stopping Telegram bot...")
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
+
+
+async def main() -> None:
+    logger.info("=" * 60)
+    logger.info("🚀 Starting UI Bot (Telegram + API)")
+    logger.info("=" * 60)
+
+    if not TELEGRAM_BOT_TOKEN_UI:
+        raise ValueError("TELEGRAM_BOT_TOKEN_UI is required")
+
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN_UI).build()
+
+    # Commands
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("menu", menu_command))
+    application.add_handler(CommandHandler("plans", plans_command))
+    application.add_handler(CommandHandler("settings", settings_command))
+    application.add_handler(CommandHandler("set_po", set_po_command))
+    application.add_handler(CommandHandler("signal", request_signal_command))
+
+    # Admin
+    application.add_handler(CommandHandler("admin", admin_command))
+    application.add_handler(CommandHandler("ban_user", ban_user_command))
+    application.add_handler(CommandHandler("unban_user", unban_user_command))
+    application.add_handler(CommandHandler("add_admin", add_admin_command))
+    application.add_handler(CommandHandler("remove_admin", remove_admin_command))
+    application.add_handler(CommandHandler("reset_user", reset_user_command))
+
+    # UI callbacks
+    application.add_handler(CallbackQueryHandler(callback_router))
+
+    telegram_task = asyncio.create_task(run_telegram_bot(application))
+
+    port = int(os.getenv("PORT", "8000"))
+    config = uvicorn.Config(api_app, host="0.0.0.0", port=port, log_level="info", access_log=True)
+    server = uvicorn.Server(config)
+    api_task = asyncio.create_task(server.serve())
+
+    await asyncio.gather(telegram_task, api_task)
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("\n" + "="*60)
-        logger.info("👋 Получен сигнал остановки (Ctrl+C)")
-        logger.info("🛑 Оба процесса остановлены")
-        logger.info("="*60)
-    except Exception as e:
-        logger.error(f"\n❌ Неожиданная ошибка: {e}")
-        raise
+        logger.info("\n🛑 Stopped")
