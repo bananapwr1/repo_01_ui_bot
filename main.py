@@ -1,319 +1,164 @@
+# main.py (UI-Bot)
 import os
-import logging
 import asyncio
-import sqlite3
-import requests
-import json
-from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters, ConversationHandler
+import logging
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+
+# Наши модули
+from user_db_handler import init_db, save_encrypted_credentials, get_encrypted_data_from_local_db
+from crypto_utils import encrypt_data
+# Импорт Supabase (для чтения user_signals и записи signal_requests)
+from supabase import create_client, Client
 from dotenv import load_dotenv
-from cryptography.fernet import Fernet # Для шифрования
-from typing import Optional, Dict, Any
 
-# ============================ КОНФИГУРАЦИЯ ============================
+# --- Настройка ---
 load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN") # 8218904195:AAGinuQn0eGe8qYm-P5EOPwVq3awPyJ5fD8
-ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY") # Ключ для Fernet (из Env Vars)
-SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
-SUPABASE_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
-
-if not all([BOT_TOKEN, ENCRYPTION_KEY, SUPABASE_URL, SUPABASE_KEY]):
-    raise ValueError("❌ Отсутствуют ключевые переменные окружения.")
-
-DB_PATH = os.getenv("SQLITE_DB_NAME", "user_data.db") # user_data.db
-SUPPORT_CONTACT = "@banana_pwr"
-
-# Состояния FSM
-(WAITING_FOR_EMAIL, WAITING_FOR_PASSWORD) = range(2)
-
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ========================== КЛАССЫ И УТИЛИТЫ ==========================
+# Переменные окружения для Supabase и Telegram
+TELEGRAM_BOT_TOKEN_UI = os.getenv("TELEGRAM_BOT_TOKEN_UI")
+SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY_FOR_CORE") # Используем публичный ключ для чтения
 
-class SQLiteManager:
-    """Управление локальной базой данных пользователей."""
-    def __init__(self, db_path):
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.init_db()
+# Инициализация Supabase
+supabase: Optional[Client] = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Инициализация локальной БД
+init_db()
 
-    def init_db(self):
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY,
-                telegram_id INTEGER UNIQUE,
-                username TEXT,
-                subscription_type TEXT DEFAULT 'none',
-                po_email TEXT,
-                po_password_enc TEXT, -- Encrypted password
-                fsm_state TEXT,
-                created_at TEXT
-            )
-        ''')
-        self.conn.commit()
+# --- 1. FastAPI API-сервер (Связь с Ядром Render) ---
+api_app = FastAPI(title="UI Bot API for Trading Core")
 
-    def get_user(self, telegram_id) -> Optional[Dict[str, Any]]:
-        cursor = self.conn.cursor()
-        cursor.execute('SELECT * FROM users WHERE telegram_id = ?', (telegram_id,))
-        row = cursor.fetchone()
-        if row:
-            columns = [col[0] for col in cursor.description]
-            return dict(zip(columns, row))
-        return None
+# Модель данных для входящего запроса от Ядра Render
+class CoreRequest(BaseModel):
+    user_id: int
+    request_source: str
 
-    def create_or_get_user(self, telegram_id, username):
-        user = self.get_user(telegram_id)
-        if user:
-            return user
-        
-        created_at = datetime.now().isoformat()
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            INSERT INTO users (telegram_id, username, created_at) 
-            VALUES (?, ?, ?)
-        ''', (telegram_id, username, created_at))
-        self.conn.commit()
-        return self.get_user(telegram_id)
-
-    def update_user(self, telegram_id, data: Dict[str, Any]):
-        set_clause = ', '.join([f'{key} = ?' for key in data.keys()])
-        values = list(data.values())
-        values.append(telegram_id)
-        
-        cursor = self.conn.cursor()
-        cursor.execute(f'UPDATE users SET {set_clause} WHERE telegram_id = ?', values)
-        self.conn.commit()
+@api_app.post("/get_po_credentials")
+async def get_po_credentials_endpoint(request_data: CoreRequest):
+    """
+    Эндпоинт, который Ядро Render использует для получения зашифрованных данных PO.
+    """
+    user_id = request_data.user_id
     
-    def get_po_credentials(self, telegram_id):
-        user = self.get_user(telegram_id)
-        if user and user['po_email'] and user['po_password_enc']:
-            f = Fernet(ENCRYPTION_KEY.encode())
-            try:
-                # Дешифрование данных
-                password_dec = f.decrypt(user['po_password_enc'].encode()).decode()
-                return user['po_email'], password_dec
-            except Exception as e:
-                logger.error(f"Decryption error for user {telegram_id}: {e}")
-                return user['po_email'], None
-        return None, None
+    # Здесь можно добавить проверку секретного ключа/токена для защиты
 
-class SupabaseLiteManager:
-    """Управление Supabase только для записи команд."""
-    def __init__(self, url, key):
-        self.url = url
-        self.key = key
-        self.headers = {
-            'apikey': self.key,
-            'Authorization': f'Bearer {self.key}',
-            'Content-Type': 'application/json',
-            'Prefer': 'return=minimal' # Запрашиваем минимальный ответ
-        }
-
-    async def save_signal_request(self, user_id, signal_type):
-        """Записывает запрос сигнала в Supabase для обработки Ядром PA."""
-        command_data = {
-            'user_id': user_id,
-            'request_type': signal_type,
-            'status': 'pending',
-            'created_at': datetime.now().isoformat()
-        }
-        url = f"{self.url}/rest/v1/signal_requests" # Имя таблицы для запросов
+    try:
+        encrypted_creds = await get_encrypted_data_from_local_db(user_id) 
         
-        try:
-            # Используем requests.post для простой записи
-            response = requests.post(url, headers=self.headers, json=command_data)
+        if not encrypted_creds:
+            raise HTTPException(status_code=404, detail=f"Credentials not found for user {user_id}")
             
-            if response.status_code in [201, 204]:
-                return True
-            else:
-                logger.error(f"Supabase POST error (signal_requests): Status {response.status_code}, Body: {response.text}")
-                return False
-        except Exception as e:
-            logger.error(f"Supabase network error: {e}")
-            return False
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "login_enc": encrypted_creds['login_enc'],
+            "password_enc": encrypted_creds['password_enc']
+        }
 
-# Инициализация
-db_lite = SQLiteManager(DB_PATH)
-supabase_lite = SupabaseLiteManager(SUPABASE_URL, SUPABASE_KEY)
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"❌ DB Error for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal database error")
 
-# =========================== ХЭНДЛЕРЫ КОМАНД ===========================
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """🏠 Главное меню"""
-    user_id = update.effective_user.id
-    username = update.effective_user.username or 'N/A'
-    
-    user_data = db_lite.create_or_get_user(user_id, username)
-    subscription = user_data.get('subscription_type', 'none').upper()
-    
-    keyboard = [
-        [InlineKeyboardButton("⚡ SHORT сигнал", callback_data='req_short'), 
-         InlineKeyboardButton("🔵 LONG сигнал", callback_data='req_long')],
-        [InlineKeyboardButton("💳 Настройка PO", callback_data='settings_po'),
-         InlineKeyboardButton("💎 Тарифы", callback_data='plans')],
-        [InlineKeyboardButton("❓ Помощь / Поддержка", callback_data='help')]
-    ]
-    
+# --- 2. Telegram Bot Логика (Пользовательский интерфейс) ---
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает команду /start."""
     await update.message.reply_text(
-        f"🏠 *Главное меню*\n\n"
-        f"🤖 Ваш ID: `{user_id}`\n"
-        f"📋 *Текущий тариф:* {subscription}\n"
-        f"Выберите действие:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+        "👋 Добро пожаловать! Я — Ваш торговый бот. Используйте /set_po для настройки Pocket Option или /signal для запроса сигнала."
     )
 
-async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    user_id = query.from_user.id
-    
-    if data == 'req_short' or data == 'req_long':
-        signal_type = data.split('_')[1]
+async def set_po_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Начинает процесс сохранения учетных данных PO."""
+    # Пример простой обработки
+    if context.args and len(context.args) == 2:
+        login = context.args[0]
+        password = context.args[1]
+        user_id = update.effective_user.id
         
-        # Проверка лимитов (здесь должна быть сложная логика, но для Bot #1 мы ее упрощаем)
-        user_data = db_lite.get_user(user_id)
-        if user_data.get('subscription_type') == 'none' and (datetime.now() - datetime.fromisoformat(user_data.get('created_at')) > timedelta(days=1)):
-             # Пример: если FREE и прошло 24 часа
-             await query.edit_message_text("❌ Ваш бесплатный лимит исчерпан. Пожалуйста, приобретите подписку.",
-                                           reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💎 Тарифы", callback_data='plans')]]))
+        # 1. Шифрование
+        login_enc = encrypt_data(login)
+        password_enc = encrypt_data(password)
+        
+        if not login_enc or not password_enc:
+             await update.message.reply_text("❌ Ошибка шифрования. Проверьте ENCRYPTION_KEY в .env")
              return
 
-        # 1. Отправляем запрос в Supabase для обработки Ядром PA
-        success = await supabase_lite.save_signal_request(user_id, signal_type)
+        # 2. Сохранение в локальной БД (только зашифрованные данные)
+        await save_encrypted_credentials(user_id, login_enc, password_enc)
         
-        if success:
-            await query.edit_message_text(
-                f"✅ *{signal_type.upper()} сигнал запрошен*\n\n"
-                "Сигнал отправлен в торговое ядро...\n"
-                "Ожидайте уведомления!",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data='start')]]),
-                parse_mode='Markdown'
-            )
-        else:
-            await query.edit_message_text("❌ *Ошибка отправки команды SIGNAL*.\n\nПопробуйте позже или проверьте соединение с Supabase.",
-                                           reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data='start')]]),
-                                           parse_mode='Markdown')
-        
-    elif data == 'settings_po':
-        # Запуск FSM для ввода данных PO
-        await query.edit_message_text(
-            "💳 *Настройка Pocket Option*\n\n"
-            "Введите ваш **Email** для Pocket Option:",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data='cancel_fsm')]]),
-            parse_mode='Markdown'
-        )
-        return WAITING_FOR_EMAIL # Переход в состояние FSM
-        
-    elif data == 'cancel_fsm' or data == 'start':
-        # Сброс FSM и возврат в меню
-        await start_command(update, context)
-        return ConversationHandler.END
-        
-    # Добавьте хэндлеры для 'plans' и 'help' с их собственными сообщениями
-    elif data == 'plans':
-        await query.edit_message_text("💎 *Тарифы*\n\n(Подробная информация о тарифах...)")
-        await start_command(update, context)
+        await update.message.reply_text("✅ Ваши данные Pocket Option зашифрованы и сохранены локально.")
+    else:
+        await update.message.reply_text("Использование: /set_po [логин] [пароль]. *Не используйте реальные данные пока не убедитесь в безопасности!*")
 
-    elif data == 'help':
-        await query.edit_message_text(f"❓ *Помощь*\n\nОбратитесь к {SUPPORT_CONTACT}")
-        await start_command(update, context)
 
-    await query.edit_message_reply_markup(reply_markup=create_main_menu_keyboard(user_id))
-
-def create_main_menu_keyboard(user_id):
-    # Вспомогательная функция для генерации клавиатуры (как в start_command)
-    keyboard = [
-        [InlineKeyboardButton("⚡ SHORT сигнал", callback_data='req_short'), 
-         InlineKeyboardButton("🔵 LONG сигнал", callback_data='req_long')],
-        [InlineKeyboardButton("💳 Настройка PO", callback_data='settings_po'),
-         InlineKeyboardButton("💎 Тарифы", callback_data='plans')],
-        [InlineKeyboardButton("❓ Помощь / Поддержка", callback_data='help')]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# =========================== FSM (Pocket Option Login) ===========================
-
-async def fsm_enter_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Первый шаг FSM: ввод email."""
-    email = update.message.text
-    context.user_data['po_email'] = email
-    
-    await update.message.reply_text("Отлично. Теперь введите ваш **Пароль** для Pocket Option:")
-    return WAITING_FOR_PASSWORD # Переход в следующее состояние
-
-async def fsm_enter_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Второй шаг FSM: ввод пароля, шифрование и сохранение."""
-    password = update.message.text
+async def request_signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает команду /signal (запрос к Ядру Render через Supabase)."""
     user_id = update.effective_user.id
-
-    # 1. Шифрование пароля
-    f = Fernet(ENCRYPTION_KEY.encode())
-    encrypted_password_bytes = f.encrypt(password.encode())
-    encrypted_password_str = encrypted_password_bytes.decode()
-
-    # 2. Сохранение в SQLite
-    db_lite.update_user(user_id, {
-        'po_email': context.user_data['po_email'],
-        'po_password_enc': encrypted_password_str
-    })
     
-    # 3. Уведомление
-    await update.message.reply_text(
-        "✅ *Данные Pocket Option сохранены и зашифрованы!*\n\n"
-        "Теперь вы можете использовать автоторговлю (если у вас VIP тариф).",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data='start')]]),
-        parse_mode='Markdown'
-    )
-    # Завершение FSM
-    return ConversationHandler.END
+    try:
+        # Запись запроса в таблицу signal_requests (Supabase)
+        supabase.table("signal_requests").insert({
+            'user_id': user_id,
+            'request_type': 'latest_signal',
+            'status': 'pending',
+            'created_at': 'now()'
+        }).execute()
+        
+        await update.message.reply_text(
+            "⏳ Запрос на сигнал отправлен. Ядро Анализа (Render) обработает его в ближайшее время и пришлет ответ."
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Supabase error: {e}")
+        await update.message.reply_text("❌ Ошибка при отправке запроса в базу данных.")
 
-async def fsm_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена FSM."""
-    await update.message.reply_text("Операция отменена. Возврат в главное меню.",
-                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data='start')]]))
-    return ConversationHandler.END
 
-# =========================== ЗАПУСК БОТА ===========================
+def run_telegram_bot():
+    """Запускает Telegram-бот."""
+    if not TELEGRAM_BOT_TOKEN_UI:
+        logger.error("🚫 TELEGRAM_BOT_TOKEN_UI не задан. Бот не будет запущен.")
+        return
 
-async def set_default_commands(application: Application):
-    """Установка команд бота."""
-    commands = [BotCommand(command, description) for command, description in [
-        ("start", "🏠 Главное меню"),
-        ("plans", "💎 Тарифы"),
-        ("short", "⚡ SHORT сигнал"),
-        ("long", "🔵 LONG сигнал"),
-    ]]
-    await application.bot.set_my_commands(commands)
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN_UI).build()
 
-def main():
-    application = Application.builder().token(BOT_TOKEN).post_init(set_default_commands).build()
-    
-    # Хэндлеры для команд
     application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("plans", start_command)) # Перенаправляем на start для единого меню
+    application.add_handler(CommandHandler("set_po", set_po_command))
+    application.add_handler(CommandHandler("signal", request_signal_command))
     
-    # Хэндлер для FSM (Настройка PO)
-    conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(handle_callback_query, pattern='^settings_po$')],
-        states={
-            WAITING_FOR_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, fsm_enter_email)],
-            WAITING_FOR_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, fsm_enter_password)],
-        },
-        fallbacks=[CommandHandler('cancel', fsm_cancel), CallbackQueryHandler(fsm_cancel, pattern='^cancel_fsm$')]
-    )
-    application.add_handler(conv_handler)
-    
-    # Хэндлер для CallbackQuery (основные кнопки)
-    application.add_handler(CallbackQueryHandler(handle_callback_query))
-    
-    logger.info("🚀 Client UI Bot is running...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Запуск бота (без блокировки)
+    application.run_polling(poll_interval=1.0, timeout=10, drop_pending_updates=True, stop_on_shutdown=False)
 
-if __name__ == '__main__':
-    main()
+
+# --- 3. Объединение и Запуск ---
+
+async def main():
+    """Главная асинхронная функция, запускающая оба процесса."""
+    logger.info("🚀 Запуск UI-Бота (Telegram + API Server)...")
+
+    # 1. Запуск Telegram Bot в отдельном потоке
+    telegram_task = asyncio.to_thread(run_telegram_bot)
+    
+    # 2. Настройка и запуск FastAPI (uvicorn)
+    # При деплое на Bothost, порт может быть задан хостингом (обычно PORT=8000)
+    config = uvicorn.Config(api_app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)), log_level="info")
+    server = uvicorn.Server(config)
+    
+    api_task = asyncio.create_task(server.serve())
+
+    # Ждем, пока оба процесса работают
+    await asyncio.gather(telegram_task, api_task)
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("👋 Оба процесса остановлены.")
