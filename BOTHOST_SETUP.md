@@ -4,7 +4,7 @@
 
 Код был исправлен для корректной работы с переменными окружения:
 
-1. **Исправлена инициализация Supabase** - теперь правильно читает `SUPABASE_URL` и `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+1. **Исправлена инициализация Supabase** - теперь использует `SUPABASE_URL` и публичный `SUPABASE_KEY` (опционально)
 2. **Добавлена проверка переменных** - бот не запустится с понятным сообщением об ошибке, если переменные не установлены
 3. **Исправлено шифрование** - функция `encrypt_data()` теперь автоматически получает ключ из переменных окружения
 4. **Добавлен импорт `Optional`** - исправлена ошибка типизации
@@ -17,20 +17,26 @@
 
 | Имя переменной | Значение | Описание |
 |---------------|----------|----------|
-| `TELEGRAM_BOT_TOKEN_UI` | `8218904195:AAGinuQn0eGe8qYm-P5EOPwVq3awPyJ5fD8` | Токен Telegram-бота |
-| `SUPABASE_URL` | `https://qdilspmiaoxrnotarjnq.supabase.co` | URL вашего Supabase проекта |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...` | Anon Key из Supabase |
-| `ENCRYPTION_KEY` | `JtLogaohovOzSQhIBhp3m0RTcwEky7Ul3i10ErQWBSU=` | Ключ шифрования (Fernet) |
+| `TELEGRAM_BOT_TOKEN_UI` | `<your_telegram_bot_token>` | Токен Telegram-бота |
+| `ENCRYPTION_KEY` | `<your_fernet_key>` | Ключ шифрования (Fernet) |
 | `PORT` | `8000` | Порт для API-сервера |
+| `SUPABASE_URL` | `https://your-project.supabase.co` | (Опционально) URL Supabase проекта |
+| `SUPABASE_KEY` | `<your_supabase_public_key>` | (Опционально) публичный ключ Supabase |
+| `ADMIN_USER_ID` | `<your_telegram_user_id>` | (Опционально) root admin id для админ-команд |
 
 ### Копируйте эти значения в Bothost:
 
 ```bash
-TELEGRAM_BOT_TOKEN_UI=8218904195:AAGinuQn0eGe8qYm-P5EOPwVq3awPyJ5fD8
-SUPABASE_URL=https://qdilspmiaoxrnotarjnq.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFkaWxzcG1pYW94cm5vdGFyam5xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2MzkwMjUsImV4cCI6MjA3NjIxNTAyNX0.Ze0b8raeP1Pnhy3JYIjAL1fg3TVBLAHDM016r4ifruc
-ENCRYPTION_KEY=JtLogaohovOzSQhIBhp3m0RTcwEky7Ul3i10ErQWBSU=
+TELEGRAM_BOT_TOKEN_UI=<your_telegram_bot_token>
+ENCRYPTION_KEY=<your_fernet_key>
 PORT=8000
+
+# (Опционально) Только если используете Supabase для signal_requests:
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=<your_supabase_public_key>
+
+# (Опционально) Root-доступ к админ-командам:
+ADMIN_USER_ID=<your_telegram_user_id>
 ```
 
 ## 🔧 Инструкции по установке на Bothost
@@ -76,7 +82,7 @@ INFO:     Uvicorn running on http://0.0.0.0:8000
 
 **НЕ ДОЛЖНО БЫТЬ:**
 - ❌ `supabase_key is required`
-- ❌ `SUPABASE_URL или SUPABASE_KEY не установлены!`
+- ❌ `SUPABASE_URL или SUPABASE_KEY не установлены!` (только если вы включили Supabase-функции)
 - ❌ `ENCRYPTION_KEY is required`
 
 ## 🌐 Получение URL бота

@@ -7,7 +7,7 @@ UI-бот для взаимодействия пользователей с то
 - **Telegram интерфейс** - пользователи взаимодействуют с системой через Telegram
 - **API-сервер** - предоставляет REST API для связи с Ядром Анализа (Render)
 - **Шифрование данных** - безопасное хранение учетных данных Pocket Option
-- **Интеграция с Supabase** - связь с базой данных для сигналов и запросов
+- **Интеграция с Supabase (опционально)** - внешние таблицы для сигналов и запросов (без хранения профилей пользователей)
 
 ## 📋 Компоненты
 
@@ -47,10 +47,15 @@ pip install -r requirements.txt
 
 ```bash
 TELEGRAM_BOT_TOKEN_UI=your_telegram_bot_token
-SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
 ENCRYPTION_KEY=your_fernet_encryption_key
 PORT=8000
+
+# Опционально (только если нужен функционал сигналов через внешнюю БД):
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your_supabase_public_key
+
+# Опционально (root admin-команды):
+ADMIN_USER_ID=123456789
 ```
 
 ### 3. Запуск
@@ -121,7 +126,7 @@ python main.py
 python -m py_compile main.py user_db_handler.py crypto_utils.py
 
 # Проверка переменных окружения
-python -c "from dotenv import load_dotenv; import os; load_dotenv(); print('OK' if all([os.getenv('TELEGRAM_BOT_TOKEN_UI'), os.getenv('SUPABASE_URL'), os.getenv('NEXT_PUBLIC_SUPABASE_ANON_KEY'), os.getenv('ENCRYPTION_KEY')]) else 'MISSING VARS')"
+python -c "from dotenv import load_dotenv; import os; load_dotenv(); print('OK' if all([os.getenv('TELEGRAM_BOT_TOKEN_UI'), os.getenv('ENCRYPTION_KEY')]) else 'MISSING VARS')"
 ```
 
 ### Тестирование шифрования
@@ -153,7 +158,7 @@ print("✅ Encryption works!")
 ### Частые проблемы:
 
 **1. `supabase_key is required`**
-- Проверьте переменные `SUPABASE_URL` и `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- Проверьте переменные `SUPABASE_URL` и `SUPABASE_KEY`
 - Убедитесь, что они установлены в окружении
 
 **2. `ENCRYPTION_KEY is required`**

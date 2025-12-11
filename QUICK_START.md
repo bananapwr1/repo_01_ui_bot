@@ -15,17 +15,22 @@
 
 ### 2️⃣ Установите переменные окружения
 
-Перейдите в раздел **"Environment Variables"** и добавьте ВСЕ 5 переменных:
+Перейдите в раздел **\"Environment Variables\"** и добавьте переменные:
 
 ```bash
-TELEGRAM_BOT_TOKEN_UI=8218904195:AAGinuQn0eGe8qYm-P5EOPwVq3awPyJ5fD8
-SUPABASE_URL=https://qdilspmiaoxrnotarjnq.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFkaWxzcG1pYW94cm5vdGFyam5xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2MzkwMjUsImV4cCI6MjA3NjIxNTAyNX0.Ze0b8raeP1Pnhy3JYIjAL1fg3TVBLAHDM016r4ifruc
-ENCRYPTION_KEY=JtLogaohovOzSQhIBhp3m0RTcwEky7Ul3i10ErQWBSU=
+TELEGRAM_BOT_TOKEN_UI=<your_telegram_bot_token>
+ENCRYPTION_KEY=<your_fernet_key>
 PORT=8000
+
+# Опционально (только если нужен функционал запросов сигналов через внешнюю БД):
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=<your_supabase_public_key>
+
+# Опционально (root-доступ к командам администрирования):
+ADMIN_USER_ID=<your_telegram_user_id>
 ```
 
-⚠️ **ВАЖНО**: Копируйте каждую переменную ТОЧНО как указано, без лишних пробелов!
+⚠️ **ВАЖНО**: Никогда не публикуйте реальные токены/ключи в репозитории.
 
 ### 3️⃣ Запустите бот
 
@@ -43,7 +48,7 @@ PORT=8000
 ============================================================
 📡 API Server: http://0.0.0.0:8000
 🤖 Telegram Bot: Configured
-🗄️ Supabase: Connected
+🗄️ Supabase: Connected/Not configured
 🔐 Encryption: Enabled
 ============================================================
 🔄 Запуск Telegram-бота...
@@ -85,8 +90,8 @@ INFO:     Uvicorn running on http://0.0.0.0:8000
 ### ❌ Ошибка: `supabase_key is required`
 
 **Решение:** Проверьте, что установлены переменные:
-- `SUPABASE_URL` (не путайте с `NEXT_PUBLIC_SUPABASE_ANON_KEY`!)
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_KEY`
 
 ### ❌ Ошибка: `ENCRYPTION_KEY is required`
 

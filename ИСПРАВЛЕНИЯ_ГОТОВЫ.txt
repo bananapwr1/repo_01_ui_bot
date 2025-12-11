@@ -92,12 +92,14 @@
        Откройте проект repo_01_ui_bot
 
 ШАГ 2: Установите переменные окружения
-       Добавьте все 5 переменных из файла .env:
+       Обязательные:
        • TELEGRAM_BOT_TOKEN_UI
-       • SUPABASE_URL
-       • NEXT_PUBLIC_SUPABASE_ANON_KEY
        • ENCRYPTION_KEY
        • PORT
+       Опциональные:
+       • SUPABASE_URL
+       • SUPABASE_KEY
+       • ADMIN_USER_ID
 
 ШАГ 3: Запустите бот
        Нажмите "Rebuild" или "Deploy"
@@ -132,13 +134,15 @@ python3 -m py_compile main.py user_db_handler.py crypto_utils.py
 ⚠️  ВАЖНЫЕ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ДЛЯ BOTHOST
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-TELEGRAM_BOT_TOKEN_UI=8218904195:AAGinuQn0eGe8qYm-P5EOPwVq3awPyJ5fD8
+TELEGRAM_BOT_TOKEN_UI=<your_telegram_bot_token>
 
-SUPABASE_URL=https://qdilspmiaoxrnotarjnq.supabase.co
+ENCRYPTION_KEY=<your_fernet_key>
 
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFkaWxzcG1pYW94cm5vdGFyam5xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA2MzkwMjUsImV4cCI6MjA3NjIxNTAyNX0.Ze0b8raeP1Pnhy3JYIjAL1fg3TVBLAHDM016r4ifruc
+SUPABASE_URL=https://your-project.supabase.co
 
-ENCRYPTION_KEY=JtLogaohovOzSQhIBhp3m0RTcwEky7Ul3i10ErQWBSU=
+SUPABASE_KEY=<your_supabase_public_key>
+
+ADMIN_USER_ID=<your_telegram_user_id>
 
 PORT=8000
 

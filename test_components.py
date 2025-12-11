@@ -69,10 +69,14 @@ def test_env_variables():
     
     required_vars = {
         'TELEGRAM_BOT_TOKEN_UI': 'Токен Telegram-бота',
-        'SUPABASE_URL': 'URL Supabase проекта',
-        'NEXT_PUBLIC_SUPABASE_ANON_KEY': 'Anon ключ Supabase',
         'ENCRYPTION_KEY': 'Ключ шифрования (Fernet)',
         'PORT': 'Порт API-сервера'
+    }
+
+    optional_vars = {
+        'SUPABASE_URL': 'URL Supabase проекта (опционально, только для внешних таблиц)',
+        'SUPABASE_KEY': 'Публичный ключ Supabase (опционально)',
+        'ADMIN_USER_ID': 'Root admin Telegram user id (опционально)',
     }
     
     tests_passed = 0
@@ -85,6 +89,14 @@ def test_env_variables():
             tests_passed += 1
         else:
             print_error(f"{var}: НЕ УСТАНОВЛЕН ({desc})")
+
+    # Опциональные переменные не должны валить тесты
+    for var, desc in optional_vars.items():
+        value = os.getenv(var)
+        if value:
+            print_success(f"{var}: {desc} [{value[:20]}...]")
+        else:
+            print_warning(f"{var}: НЕ УСТАНОВЛЕН ({desc})")
     
     return tests_passed == tests_total
 
@@ -96,11 +108,11 @@ def test_supabase():
         from supabase import create_client
         
         url = os.getenv('SUPABASE_URL')
-        key = os.getenv('NEXT_PUBLIC_SUPABASE_ANON_KEY')
+        key = os.getenv('SUPABASE_KEY')
         
         if not url or not key:
-            print_error("Переменные SUPABASE_URL или NEXT_PUBLIC_SUPABASE_ANON_KEY не установлены")
-            return False
+            print_warning("Supabase не настроен (SUPABASE_URL/SUPABASE_KEY отсутствуют) — это допустимо для UI-бота")
+            return True
         
         supabase = create_client(url, key)
         print_success(f"Supabase клиент создан для проекта: {url}")
