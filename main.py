@@ -244,8 +244,7 @@ def run_telegram_bot():
         application.run_polling(
             poll_interval=1.0, 
             timeout=10, 
-            drop_pending_updates=True, 
-            stop_on_shutdown=False
+            drop_pending_updates=True
         )
         
     except Exception as e:
