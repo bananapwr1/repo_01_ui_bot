@@ -1,3 +1,21 @@
+# Исправленный импорт для supabase >= 2.0
+try:
+    from supabase import create_client, Client
+    SUPABASE_NEW = True
+except ImportError:
+    # Для старых версий
+    from supabase import create_client
+    SUPABASE_NEW = False
+# Инициализация Supabase (совместимость с версиями)
+try:
+    if SUPABASE_NEW:
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    else:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    logger.info("✅ Supabase подключен")
+except Exception as e:
+    logger.error(f"❌ Ошибка Supabase: {e}")
+    supabase = None  # Бот будет работать без Supabase
 #!/usr/bin/env python3
 """
 BOTHOST БОТ #1: ИНТЕРФЕЙСНЫЙ БОТ
