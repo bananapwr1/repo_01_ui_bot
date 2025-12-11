@@ -265,10 +265,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============ ЗАПУСК БОТА ============
 def main():
     """Главная функция"""
-    if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN не задан!")
-        return
-    
     # Создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
     
@@ -291,6 +287,7 @@ def main():
     
     # Запускаем
     logger.info("🤖 Бот #1 запускается...")
+    logger.info(f"📱 Токен: {BOT_TOKEN[:10]}...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
