@@ -222,31 +222,36 @@ async def request_signal_command(update: Update, context: ContextTypes.DEFAULT_T
         )
 
 
-def run_telegram_bot():
-    """Запускает Telegram-бот."""
-    if not TELEGRAM_BOT_TOKEN_UI:
-        logger.error("🚫 TELEGRAM_BOT_TOKEN_UI не задан. Бот не будет запущен.")
-        return
-
+async def run_telegram_bot(application: Application):
+    """Запускает Telegram-бот в асинхронном режиме."""
     try:
-        logger.info("🤖 Инициализация Telegram-бота...")
-        application = Application.builder().token(TELEGRAM_BOT_TOKEN_UI).build()
-
-        # Регистрация обработчиков команд
-        application.add_handler(CommandHandler("start", start_command))
-        application.add_handler(CommandHandler("set_po", set_po_command))
-        application.add_handler(CommandHandler("signal", request_signal_command))
+        logger.info("🚀 Запуск Telegram-бота в асинхронном режиме...")
         
-        logger.info("✅ Обработчики команд зарегистрированы")
-        logger.info("🚀 Запуск Telegram-бота в режиме polling...")
+        # 1. Инициализация приложения
+        await application.initialize()
         
-        # Запуск бота (без блокировки)
-        application.run_polling(
-            poll_interval=1.0, 
-            timeout=10, 
+        # 2. Запуск бота (начало polling)
+        await application.start()
+        await application.updater.start_polling(
+            poll_interval=1.0,
+            timeout=10,
             drop_pending_updates=True
         )
         
+        logger.info("✅ Telegram-бот успешно запущен и работает")
+        
+        # 3. Бесконечный цикл для поддержания работы бота
+        try:
+            while True:
+                await asyncio.sleep(60)  # Спим 60 секунд, чтобы не тратить CPU
+        finally:
+            # 4. Корректная остановка при завершении
+            logger.info("🛑 Остановка Telegram-бота...")
+            await application.updater.stop()
+            await application.stop()
+            await application.shutdown()
+            logger.info("✅ Telegram-бот остановлен")
+            
     except Exception as e:
         logger.error(f"❌ Ошибка при запуске Telegram-бота: {e}")
         raise
@@ -268,11 +273,25 @@ async def main():
     logger.info("="*60)
 
     try:
-        # 1. Запуск Telegram Bot в отдельном потоке
-        logger.info("🔄 Запуск Telegram-бота...")
-        telegram_task = asyncio.to_thread(run_telegram_bot)
+        # 1. Инициализация Telegram Application и регистрация обработчиков
+        if not TELEGRAM_BOT_TOKEN_UI:
+            logger.error("🚫 TELEGRAM_BOT_TOKEN_UI не задан. Бот не будет запущен.")
+            raise ValueError("TELEGRAM_BOT_TOKEN_UI не установлен")
         
-        # 2. Настройка и запуск FastAPI (uvicorn)
+        logger.info("🤖 Инициализация Telegram-бота...")
+        application = Application.builder().token(TELEGRAM_BOT_TOKEN_UI).build()
+        
+        # Регистрация обработчиков команд
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(CommandHandler("set_po", set_po_command))
+        application.add_handler(CommandHandler("signal", request_signal_command))
+        logger.info("✅ Обработчики команд зарегистрированы")
+        
+        # 2. Запуск Telegram Bot как асинхронной задачи
+        logger.info("🔄 Запуск Telegram-бота...")
+        telegram_task = asyncio.create_task(run_telegram_bot(application))
+        
+        # 3. Настройка и запуск FastAPI (uvicorn)
         # При деплое на Bothost, порт может быть задан хостингом (обычно PORT=8000)
         port = int(os.getenv("PORT", 8000))
         logger.info(f"🔄 Запуск API-сервера на порту {port}...")
