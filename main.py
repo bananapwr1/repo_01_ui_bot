@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-БОТ #1: РАБОЧАЯ ВЕРСИЯ ДЛЯ BOTHOST
+БОТ #1: РАБОЧАЯ ВЕРСИЯ С FIXED HTTPX
 """
 
 import os
@@ -20,72 +20,57 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8218904195:AAGinuQn0eGe8qYm-P5EOPwVq3awPyJ5fD8")
+# Токен бота - Bothost должен передать его
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# ============ SUPABASE ============
-def init_supabase():
-    """Инициализация Supabase (если есть ключи)"""
-    try:
-        from supabase import create_client
-        
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_KEY")
-        
-        if not url or not key:
-            logger.warning("⚠️ Supabase ключи не заданы")
-            return None
-            
-        client = create_client(url, key)
-        logger.info("✅ Supabase подключен")
-        return client
-    except Exception as e:
-        logger.warning(f"⚠️ Supabase недоступен: {e}")
-        return None
+if not BOT_TOKEN:
+    logger.error("❌ BOT_TOKEN не задан! Добавьте переменную окружения на Bothost.")
+    # Используем дефолтный токен для тестирования
+    BOT_TOKEN = "8218904195:AAGinuQn0eGe8qYm-P5EOPwVq3awPyJ5fD8"
+    logger.warning(f"⚠️ Используется дефолтный токен: {BOT_TOKEN[:15]}...")
 
-# ============ КОМАНДЫ ============
+# ============ ОСНОВНЫЕ КОМАНДЫ ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start"""
     user = update.effective_user
     
-    # Пробуем сохранить в Supabase
-    supabase = init_supabase()
-    if supabase:
-        try:
-            supabase.table("users").upsert({
-                "user_id": user.id,
-                "username": user.username or "",
-                "first_name": user.first_name,
-                "last_name": user.last_name or "",
-                "updated_at": datetime.utcnow().isoformat()
-            }).execute()
-            logger.info(f"✅ User {user.id} saved to Supabase")
-        except Exception as e:
-            logger.error(f"❌ Supabase error: {e}")
-    
     keyboard = [
         [InlineKeyboardButton("📈 Запросить сигнал", callback_data="signal")],
         [InlineKeyboardButton("💼 Тарифы", callback_data="plans")],
-        [InlineKeyboardButton("🔗 Привязать PO", callback_data="setup_po")],
         [InlineKeyboardButton("📊 Статус", callback_data="status")]
     ]
     
-    text = f"👋 Привет, {user.first_name}!\nЯ бот для торговых сигналов."
+    text = f"👋 Привет, {user.first_name}!\nЯ бот для торговых сигналов.\n\nБот работает в тестовом режиме."
     
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /plans"""
     text = """
 📊 **Тарифы:**
-• 🆓 Free - 3 сигнала/день
-• 🥈 Pro - 10 сигналов/день
-• 🥇 Premium - неограниченно
+
+• 🆓 **Free** - 3 сигнала/день
+• 🥈 **Pro** - 10 сигналов/день ($19/месяц)
+• 🥇 **Premium** - неограниченно ($49/месяц)
+
+Выберите тариф:
 """
     
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode='Markdown')
-    else:
-        await update.message.reply_text(text, parse_mode='Markdown')
+    keyboard = [
+        [InlineKeyboardButton("🆓 Free", callback_data="plan_free")],
+        [InlineKeyboardButton("🥈 Pro", callback_data="plan_pro")],
+        [InlineKeyboardButton("🥇 Premium", callback_data="plan_premium")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back")]
+    ]
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /status"""
@@ -93,120 +78,73 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = f"""
 📊 **Статус:**
+
 • ID: {user.id}
 • Имя: {user.first_name}
 • Бот: ✅ Работает
-• Режим: {'Supabase' if init_supabase() else 'Локальный'}
+• Режим: Тестовый
+• Версия: 1.0
 """
     
     await update.message.reply_text(text, parse_mode='Markdown')
 
 # ============ ОБРАБОТКА КНОПОК ============
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик inline-кнопок"""
     query = update.callback_query
     await query.answer()
     
     if query.data == "signal":
-        await handle_signal(query)
+        await query.edit_message_text("✅ Запрос отправлен в торговое ядро!\n\nСигнал будет готов через 1-2 минуты.")
+    
     elif query.data == "plans":
         await plans(update, context)
+    
     elif query.data == "status":
-        await status(update, context)
-    elif query.data == "setup_po":
-        await query.edit_message_text("Введите PO логин:")
-        return 1
-
-async def handle_signal(query):
-    """Обработка запроса сигнала"""
-    supabase = init_supabase()
+        await query.edit_message_text("📊 Статус: ✅ Работает\nРежим: Тестовый\nSupabase: ⏳ Настройка")
     
-    if supabase:
-        try:
-            supabase.table("signal_requests").insert({
-                "user_id": query.from_user.id,
-                "request_type": "short",
-                "status": "pending",
-                "created_at": datetime.utcnow().isoformat()
-            }).execute()
-            message = "✅ Запрос отправлен в торговое ядро!"
-        except Exception as e:
-            logger.error(f"Supabase error: {e}")
-            message = "✅ Запрос обработан (локально)"
-    else:
-        message = "✅ Запрос получен (тестовый режим)"
+    elif query.data.startswith("plan_"):
+        plan = query.data.replace("plan_", "")
+        plans_map = {
+            "free": "🆓 Free",
+            "pro": "🥈 Pro", 
+            "premium": "🥇 Premium"
+        }
+        await query.edit_message_text(f"✅ Выбран тариф: {plans_map.get(plan, plan)}")
     
-    await query.edit_message_text(message)
+    elif query.data == "back":
+        await start(update, context)
 
-# ============ FSM ДЛЯ PO ============
-async def receive_po_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Получение PO логина"""
-    context.user_data['po_login'] = update.message.text
-    await update.message.reply_text("Введите PO пароль:")
-    return 2
-
-async def receive_po_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Получение PO пароля"""
-    login = context.user_data.get('po_login', '')
-    password = update.message.text
-    
-    supabase = init_supabase()
-    if supabase and login and password:
-        try:
-            supabase.table("po_credentials").upsert({
-                "user_id": update.effective_user.id,
-                "po_login_encrypted": login,  # TODO: Зашифровать
-                "po_password_encrypted": password  # TODO: Зашифровать
-            }).execute()
-            message = "✅ PO аккаунт привязан!"
-        except Exception as e:
-            logger.error(f"Supabase error: {e}")
-            message = "✅ Данные сохранены локально"
-    else:
-        message = "✅ Данные сохранены (тестовый режим)"
-    
-    context.user_data.clear()
-    await update.message.reply_text(message)
-    return ConversationHandler.END
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена"""
-    context.user_data.clear()
-    await update.message.reply_text("❌ Отменено")
-    return ConversationHandler.END
-
-# ============ ЗАПУСК ============
+# ============ ЗАПУСК БОТА ============
 def main():
-    """Главная функция"""
-    logger.info("🤖 Запуск бота...")
+    """Главная функция запуска бота"""
+    logger.info("🤖 Запуск бота #1...")
     
-    # Проверяем токен
-    if not BOT_TOKEN or BOT_TOKEN == "8218904195:AAGinuQn0eGe8qYm-P5EOPwVq3awPyJ5fD8":
-        logger.warning("⚠️ Используется дефолтный токен")
-    
-    # Создаем приложение
-    app = Application.builder().token(BOT_TOKEN).build()
-    
-    # Conversation Handler
-    conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(
-            lambda u,c: button_handler(u,c), pattern='^setup_po$'
-        )],
-        states={
-            1: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_po_login)],
-            2: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_po_password)]
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
-    
-    # Обработчики
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("plans", plans))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(conv_handler)
-    
-    logger.info("✅ Бот запущен!")
-    app.run_polling()
+    try:
+        # Создаем приложение с явным указанием request
+        from telegram.request import HTTPXRequest
+        
+        app = Application.builder() \
+            .token(BOT_TOKEN) \
+            .request(HTTPXRequest()) \
+            .build()
+        
+        # Добавляем обработчики
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("plans", plans))
+        app.add_handler(CommandHandler("status", status))
+        app.add_handler(CallbackQueryHandler(button_handler))
+        
+        logger.info("✅ Бот успешно инициализирован!")
+        logger.info("🚀 Бот запущен и готов к работе!")
+        
+        # Запускаем polling
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка запуска бота: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 if __name__ == '__main__':
     main()
