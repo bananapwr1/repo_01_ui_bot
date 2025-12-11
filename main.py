@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BOTHOST БОТ #1: ИНТЕРФЕЙСНЫЙ БОТ (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+BOTHOST БОТ #1: ИНТЕРФЕЙСНЫЙ БОТ (FIXED FOR BOTHOST)
 """
 
 import os
@@ -24,10 +24,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============ ЗАГРУЗКА ПЕРЕМЕННЫХ ============
-load_dotenv()
-
+# ============ КОНСТАНТЫ ============
+# Bothost передает BOT_TOKEN в переменных окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8218904195:AAGinuQn0eGe8qYm-P5EOPwVq3awPyJ5fD8")
+
+if not BOT_TOKEN or BOT_TOKEN == "8218904195:AAGinuQn0eGe8qYm-P5EOPwVq3awPyJ5fD8":
+    logger.warning("⚠️ Используется дефолтный BOT_TOKEN. Проверьте переменные окружения на Bothost.")
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
 # ============ СОСТОЯНИЯ FSM ============
