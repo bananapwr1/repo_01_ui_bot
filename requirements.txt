@@ -1,7 +1,8 @@
 python-telegram-bot
 python-dotenv
 supabase-py
-cryptography # Для шифрования PO-логинов
-requests # Для простой работы с Supabase (Bot #1)
+cryptography
 fastapi
 uvicorn
+# SQLite встроен, но для совместимости с любым хостингом:
+# sqlite3
