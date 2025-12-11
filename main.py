@@ -3,6 +3,7 @@ import os
 import asyncio
 import logging
 import uvicorn
+from typing import Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from telegram import Update
@@ -22,8 +23,13 @@ logger = logging.getLogger(__name__)
 
 # Переменные окружения для Supabase и Telegram
 TELEGRAM_BOT_TOKEN_UI = os.getenv("TELEGRAM_BOT_TOKEN_UI")
-SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY_FOR_CORE") # Используем публичный ключ для чтения
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+
+# Проверка наличия обязательных переменных
+if not SUPABASE_URL or not SUPABASE_KEY:
+    logger.error("🚫 SUPABASE_URL или SUPABASE_KEY не установлены!")
+    raise ValueError("Необходимо установить переменные окружения SUPABASE_URL и NEXT_PUBLIC_SUPABASE_ANON_KEY")
 
 # Инициализация Supabase
 supabase: Optional[Client] = create_client(SUPABASE_URL, SUPABASE_KEY)
