@@ -17,7 +17,7 @@
 
 | Имя переменной | Значение | Описание |
 |---------------|----------|----------|
-| `TELEGRAM_BOT_TOKEN` (или `BOT_TOKEN` / `TELEGRAM_BOT_TOKEN_UI`) | `<your_telegram_bot_token>` | Токен Telegram-бота |
+| `BOT_TOKEN` | `<your_telegram_bot_token>` | Токен Telegram-бота |
 | `ENCRYPTION_KEY` | `<your_fernet_key>` | Ключ шифрования (Fernet) |
 | `PORT` | `8000` | Порт для API-сервера |
 | `SUPABASE_URL` | `https://your-project.supabase.co` | (Опционально) URL Supabase проекта |
@@ -27,10 +27,8 @@
 ### Копируйте эти значения в Bothost:
 
 ```bash
-# Telegram token (use ONE of these; preferred first):
-TELEGRAM_BOT_TOKEN=<your_telegram_bot_token>
-# BOT_TOKEN=<your_telegram_bot_token>
-# TELEGRAM_BOT_TOKEN_UI=<your_telegram_bot_token>
+# Telegram token (canonical)
+BOT_TOKEN=<your_telegram_bot_token>
 
 ENCRYPTION_KEY=<your_fernet_key>
 PORT=8000

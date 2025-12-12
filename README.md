@@ -46,10 +46,8 @@ pip install -r requirements.txt
 Создайте файл `.env` (или настройте переменные на Bothost):
 
 ```bash
-# Telegram token (use ONE of these; preferred first):
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-# BOT_TOKEN=your_telegram_bot_token
-# TELEGRAM_BOT_TOKEN_UI=your_telegram_bot_token
+# Telegram token (canonical)
+BOT_TOKEN=your_telegram_bot_token
 
 ENCRYPTION_KEY=your_fernet_encryption_key
 PORT=8000
@@ -130,7 +128,7 @@ python main.py
 python -m py_compile main.py user_db_handler.py crypto_utils.py
 
 # Проверка переменных окружения
-python -c "from dotenv import load_dotenv; import os; load_dotenv(); print('OK' if all([os.getenv('TELEGRAM_BOT_TOKEN'), os.getenv('ENCRYPTION_KEY')]) else 'MISSING VARS')"
+python -c "from dotenv import load_dotenv; import os; load_dotenv(); print('OK' if all([os.getenv('BOT_TOKEN'), os.getenv('ENCRYPTION_KEY')]) else 'MISSING VARS')"
 ```
 
 ### Тестирование шифрования

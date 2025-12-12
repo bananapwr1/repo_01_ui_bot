@@ -93,7 +93,7 @@
 
 ШАГ 2: Установите переменные окружения
        Обязательные:
-       • TELEGRAM_BOT_TOKEN_UI
+       • BOT_TOKEN
        • ENCRYPTION_KEY
        • PORT
        Опциональные:
@@ -134,7 +134,7 @@ python3 -m py_compile main.py user_db_handler.py crypto_utils.py
 ⚠️  ВАЖНЫЕ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ДЛЯ BOTHOST
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-TELEGRAM_BOT_TOKEN_UI=<your_telegram_bot_token>
+BOT_TOKEN=<your_telegram_bot_token>
 
 ENCRYPTION_KEY=<your_fernet_key>
 

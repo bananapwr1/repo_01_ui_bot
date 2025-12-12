@@ -58,24 +58,26 @@ logger = logging.getLogger(__name__)
 
 
 # --- Env ---
-def _get_telegram_token() -> tuple[Optional[str], Optional[str]]:
+def _get_bot_token() -> tuple[Optional[str], Optional[str]]:
     """
     Telegram bot token.
 
-    Supported env vars (in priority order):
-    - TELEGRAM_BOT_TOKEN (common generic name)
-    - BOT_TOKEN (legacy/short name)
-    - TELEGRAM_BOT_TOKEN_UI (custom name used in some setups)
+    Canonical env var:
+    - BOT_TOKEN
+
+    Deprecated aliases (still supported for backwards compatibility):
+    - TELEGRAM_BOT_TOKEN
+    - TELEGRAM_BOT_TOKEN_UI
     """
 
-    for key in ("TELEGRAM_BOT_TOKEN", "BOT_TOKEN", "TELEGRAM_BOT_TOKEN_UI"):
+    for key in ("BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN_UI"):
         value = (os.getenv(key) or "").strip()
         if value:
             return value, key
     return None, None
 
 
-TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_TOKEN_ENV = _get_telegram_token()
+BOT_TOKEN, BOT_TOKEN_ENV = _get_bot_token()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 # ТЗ: SUPABASE_KEY (публичный ключ). Оставляем fallback на старое имя для совместимости.
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
@@ -572,8 +574,8 @@ async def health_check() -> Dict[str, Any]:
 
     return {
         "status": "healthy",
-        "telegram_bot": "configured" if TELEGRAM_BOT_TOKEN else "not_configured",
-        "telegram_token_env": TELEGRAM_BOT_TOKEN_ENV or "not_set",
+        "telegram_bot": "configured" if BOT_TOKEN else "not_configured",
+        "telegram_token_env": BOT_TOKEN_ENV or "not_set",
         "supabase": supabase_status,
         "encryption": "enabled" if os.getenv("ENCRYPTION_KEY") else "not_configured",
         "sqlite_db": "enabled",
@@ -1261,22 +1263,24 @@ async def main() -> None:
     logger.info("🚀 Starting UI Bot (Telegram + API)")
     logger.info("=" * 60)
 
-    if TELEGRAM_BOT_TOKEN_ENV:
-        logger.info("✅ Telegram token loaded from env var: %s", TELEGRAM_BOT_TOKEN_ENV)
+    if BOT_TOKEN_ENV:
+        # Не печатаем токен, только имя переменной и длину (безопасно для логов).
+        logger.info("✅ Telegram token loaded from env var: %s (len=%s)", BOT_TOKEN_ENV, len(BOT_TOKEN or ""))
 
-    if not TELEGRAM_BOT_TOKEN:
+    if not BOT_TOKEN:
         logger.error(
             "Telegram bot token is not configured.\n\n"
-            "Set ONE of these environment variables (preferred first):\n"
-            "- TELEGRAM_BOT_TOKEN\n"
+            "Set this environment variable:\n"
             "- BOT_TOKEN\n\n"
+            "Deprecated (still supported, but do not use in new deployments):\n"
+            "- TELEGRAM_BOT_TOKEN\n"
             "- TELEGRAM_BOT_TOKEN_UI\n\n"
             "Bothost: Bot settings → Environment Variables → add the variable → Rebuild/Deploy.\n"
-            "Local: create a .env file with TELEGRAM_BOT_TOKEN=... (python-dotenv is enabled).\n"
+            "Local: create a .env file with BOT_TOKEN=... (python-dotenv is enabled).\n"
         )
         raise SystemExit(2)
 
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).build()
 
     # Commands
     application.add_handler(CommandHandler("start", start_command))
