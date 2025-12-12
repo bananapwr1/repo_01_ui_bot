@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 
 # --- Env ---
-TELEGRAM_BOT_TOKEN_UI = os.getenv("TELEGRAM_BOT_TOKEN_UI")
+TELEGRAM_BOT_TOKEN_UI = os.getenv("TELEGRAM_BOT_TOKEN_UI") or os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 # ТЗ: SUPABASE_KEY (публичный ключ). Оставляем fallback на старое имя для совместимости.
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
@@ -125,6 +125,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "my_longs_empty": "Пока нет сохранённых Long-сигналов.",
         "my_stats_title": "📊 Моя статистика",
         "my_stats_body": "Статистика профиля отображается на главном экране.",
+        "autotrade_title": "🤖 Автоторговля (VIP)",
+        "autotrade_body": "⚠️ Раздел в разработке. Доступно только на VIP.",
         "plans_title": "💳 Тарифы",
         "plans_body": "Ваш текущий тариф: <b>{plan}</b>\n\nВыберите тариф для апгрейда:",
         "settings_title": "⚙️ Настройки",
@@ -218,6 +220,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "my_longs_empty": "No saved Long signals yet.",
         "my_stats_title": "📊 My stats",
         "my_stats_body": "Profile stats are shown on the Home screen.",
+        "autotrade_title": "🤖 Auto-trading (VIP)",
+        "autotrade_body": "⚠️ This section is under development. VIP only.",
         "plans_title": "💳 Plans",
         "plans_body": "Current plan: <b>{plan}</b>\n\nChoose a plan to upgrade:",
         "settings_title": "⚙️ Settings",
@@ -425,6 +429,9 @@ async def render_screen(*, user_id: int, screen: str) -> tuple[str, InlineKeyboa
             [InlineKeyboardButton(tr(lang, "btn_signal"), callback_data="action:signal")],
             [InlineKeyboardButton(tr(lang, "help_title"), callback_data="nav:help")],
             [InlineKeyboardButton(tr(lang, "bank_title"), callback_data="nav:bank")],
+            [InlineKeyboardButton(tr(lang, "my_longs_title"), callback_data="nav:my_longs")],
+            [InlineKeyboardButton(tr(lang, "my_stats_title"), callback_data="nav:my_stats")],
+            [InlineKeyboardButton(tr(lang, "autotrade_title"), callback_data="nav:autotrade")],
             [InlineKeyboardButton(tr(lang, "btn_plans"), callback_data="nav:plans")],
             [InlineKeyboardButton(tr(lang, "btn_settings"), callback_data="nav:settings")],
         ]
@@ -456,6 +463,12 @@ async def render_screen(*, user_id: int, screen: str) -> tuple[str, InlineKeyboa
 
     if screen == "my_stats":
         text = f"<b>{tr(lang, 'my_stats_title')}</b>\n\n" + tr(lang, "my_stats_body")
+        kb_rows: list[list[InlineKeyboardButton]] = []
+        kb_rows.extend(_nav_kb(lang, show_back, show_home))
+        return text, InlineKeyboardMarkup(kb_rows)
+
+    if screen == "autotrade":
+        text = f"<b>{tr(lang, 'autotrade_title')}</b>\n\n" + tr(lang, "autotrade_body")
         kb_rows: list[list[InlineKeyboardButton]] = []
         kb_rows.extend(_nav_kb(lang, show_back, show_home))
         return text, InlineKeyboardMarkup(kb_rows)
@@ -636,6 +649,14 @@ async def short_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await _handle_signal(user_id=user_id, chat_id=chat_id, context=context, request_type="short")
 
 
+async def autotrade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+    await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="autotrade")
+
+
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
@@ -697,7 +718,7 @@ async def request_signal_command(update: Update, context: ContextTypes.DEFAULT_T
     chat_id = update.effective_chat.id
     if update.message:
         await _delete_message_safe(context, chat_id, update.message.message_id)
-    await _handle_signal(user_id=user_id, chat_id=chat_id, context=context)
+    await _handle_signal(user_id=user_id, chat_id=chat_id, context=context, request_type="latest_signal")
 
 
 # --- Callback handler ---
@@ -736,7 +757,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data.startswith("nav:"):
         screen = data.split(":", 1)[1]
-        if screen in {"menu", "plans", "settings", "home", "help", "bank", "my_longs", "my_stats"}:
+        if screen in {"menu", "plans", "settings", "home", "help", "bank", "my_longs", "my_stats", "autotrade"}:
             await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen=screen)
         return
 
@@ -847,7 +868,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         status = check_crypto_payment_status(payment_id)
         if status == "paid" and isinstance(pending, dict) and pending.get("payment_id") == payment_id:
-            plan = pending.get("plan", "pro")
+            plan = pending.get("plan", "long")
             await update_user_profile(user_id, plan=plan)
             await set_user_state(user_id, "pending_payment", None)
             await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "pay_check_paid", plan=plan.upper()))
@@ -856,12 +877,21 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
 
-async def _handle_signal(*, user_id: int, chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _handle_signal(
+    *, user_id: int, chat_id: int, context: ContextTypes.DEFAULT_TYPE, request_type: str = "latest_signal"
+) -> None:
     profile = await get_user_profile(user_id)
     lang = profile.get("language", "ru")
-    plan = profile.get("plan", "free")
+    plan = str(profile.get("plan", "free")).lower()
 
-    if plan not in {"pro", "vip"}:
+    # Доступ по тарифам (как в исходнике: short/long/vip)
+    if request_type == "long" and plan not in {"long", "vip"}:
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "signal_requires_plan_long"))
+        return
+    if request_type == "short" and plan not in {"short", "vip"}:
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "signal_requires_plan_short"))
+        return
+    if request_type == "latest_signal" and plan not in {"long", "short", "vip"}:
         await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "signal_requires_plan"))
         return
 
@@ -876,7 +906,7 @@ async def _handle_signal(*, user_id: int, chat_id: int, context: ContextTypes.DE
 
     try:
         await asyncio.to_thread(lambda: None)  # микроyield для гладкости UI
-        ok = await create_signal_request(user_id)
+        ok = await create_signal_request(user_id, request_type=request_type)
         await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "signal_sent" if ok else "signal_supabase_off"))
     except Exception as e:
         logger.error(f"Signal request error for user {user_id}: {e}")
@@ -897,7 +927,106 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if update.message:
         await _delete_message_safe(context, chat_id, update.message.message_id)
 
-    await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_help"))
+    kb = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(tr(lang, "admin_btn_ban"), callback_data="admin:flow:ban")],
+            [InlineKeyboardButton(tr(lang, "admin_btn_unban"), callback_data="admin:flow:unban")],
+            [InlineKeyboardButton(tr(lang, "admin_btn_set_plan"), callback_data="admin:flow:set_plan")],
+            [InlineKeyboardButton(tr(lang, "admin_btn_reset"), callback_data="admin:flow:reset")],
+            [InlineKeyboardButton(tr(lang, "admin_btn_give_me"), callback_data="nav:plans")],
+            [
+                InlineKeyboardButton(tr(lang, "plan_long"), callback_data="admin:give:long"),
+                InlineKeyboardButton(tr(lang, "plan_short"), callback_data="admin:give:short"),
+                InlineKeyboardButton(tr(lang, "plan_vip"), callback_data="admin:give:vip"),
+            ],
+        ]
+        + _nav_kb(lang, show_back=False, show_home=True)
+    )
+    await set_user_state(user_id, "admin_flow", None)
+    await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_panel_title"), keyboard=kb)
+
+
+async def god_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    profile = await get_user_profile(user_id)
+    lang = profile.get("language", "ru")
+
+    if not _is_root_admin(user_id):
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_denied"))
+        return
+
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+
+    # "Экстренное исправление": навсегда VIP + все права
+    await update_user_profile(user_id, plan="vip", is_admin=1, is_banned=0)
+    await set_user_state(user_id, "admin_flow", None)
+    await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "god_done"))
+    await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="home", push_current=False, clear_stack=True)
+
+
+async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Пошаговый ввод для admin_flow (бан/разбан/сброс/выдача плана)."""
+    if not update.message or not update.effective_user or not update.effective_chat:
+        return
+
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    text = (update.message.text or "").strip()
+
+    # Удаляем пользовательское сообщение для "чистого" UI
+    await _delete_message_safe(context, chat_id, update.message.message_id)
+
+    if not _is_root_admin(user_id):
+        return
+
+    profile = await get_user_profile(user_id)
+    lang = profile.get("language", "ru")
+
+    flow = await get_user_state(user_id, "admin_flow", default=None)
+    if not isinstance(flow, dict) or "action" not in flow:
+        return
+
+    action = str(flow.get("action"))
+
+    def _parse_int(s: str) -> Optional[int]:
+        try:
+            return int(str(s).strip())
+        except Exception:
+            return None
+
+    if action in {"ban", "unban", "reset"}:
+        target_id = _parse_int(text)
+        if not target_id:
+            await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_bad_input"))
+            return
+
+        if action == "reset":
+            await reset_user_data(target_id)
+        else:
+            await ensure_user(target_id)
+            await update_user_profile(target_id, is_banned=1 if action == "ban" else 0)
+
+        await set_user_state(user_id, "admin_flow", None)
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_done"))
+        return
+
+    if action == "set_plan":
+        parts = text.split()
+        if len(parts) != 2:
+            await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_bad_input"))
+            return
+        target_id = _parse_int(parts[0])
+        plan = parts[1].lower()
+        if not target_id or plan not in {"free", "long", "short", "vip"}:
+            await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_bad_input"))
+            return
+        await ensure_user(target_id)
+        await update_user_profile(target_id, plan=plan)
+        await set_user_state(user_id, "admin_flow", None)
+        await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_done"))
+        return
 
 
 def _parse_target_id(context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
@@ -1022,20 +1151,89 @@ async def run_telegram_bot(application: Application) -> None:
         logger.warning(f"⚠️ Could not delete webhook (continuing): {e}")
 
     await application.initialize()
+
+    # Диагностика: помогает понять, что токен/бот корректны
+    try:
+        me = await application.bot.get_me()
+        logger.info(f"✅ Bot identity: @{me.username} (id={me.id})")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not fetch bot identity: {e}")
+
+    # Меню команд (как в исходнике): общий список + расширение для админа
+    try:
+        base_commands = [
+            BotCommand("start", "🏠 Главное меню"),
+            BotCommand("plans", "💎 Тарифы и подписки"),
+            BotCommand("bank", "💰 Управление банком"),
+            BotCommand("autotrade", "🤖 Автоторговля (VIP)"),
+            BotCommand("settings", "⚙️ Настройки"),
+            BotCommand("short", "⚡ SHORT сигнал"),
+            BotCommand("long", "🔵 LONG сигнал"),
+            BotCommand("my_longs", "📋 Мои LONG позиции"),
+            BotCommand("my_stats", "📊 Моя статистика"),
+            BotCommand("help", "❓ Помощь и инструкции"),
+        ]
+        await application.bot.set_my_commands(base_commands)
+
+        if ADMIN_USER_ID:
+            admin_commands = base_commands + [
+                BotCommand("admin", "🛡️ Admin Panel"),
+                BotCommand("god", "👑 VIP (forever) + admin"),
+            ]
+            await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=int(ADMIN_USER_ID)))
+        logger.info("✅ BotCommand menu set")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not set bot commands: {e}")
+
     await application.start()
-    await application.updater.start_polling(
-        poll_interval=1.0,
-        timeout=10,
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-    )
+
+    # Polling: pin'им PTB, но оставляем fallback на случай окружения.
+    if getattr(application, "updater", None) is not None and hasattr(application.updater, "start_polling"):
+        await application.updater.start_polling(
+            poll_interval=1.0,
+            timeout=10,
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+        )
+    else:
+        logger.warning("⚠️ application.updater is unavailable; falling back to run_polling()")
+
+        def _blocking_poll() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                try:
+                    application.run_polling(
+                        poll_interval=1.0,
+                        timeout=10,
+                        allowed_updates=Update.ALL_TYPES,
+                        drop_pending_updates=True,
+                        close_loop=False,
+                        stop_signals=None,
+                    )
+                except TypeError:
+                    application.run_polling(
+                        poll_interval=1.0,
+                        timeout=10,
+                        allowed_updates=Update.ALL_TYPES,
+                        drop_pending_updates=True,
+                        close_loop=False,
+                    )
+            finally:
+                try:
+                    loop.close()
+                except Exception:
+                    pass
+
+        await asyncio.to_thread(_blocking_poll)
 
     try:
         while True:
             await asyncio.sleep(60)
     finally:
         logger.info("🛑 Stopping Telegram bot...")
-        await application.updater.stop()
+        if getattr(application, "updater", None) is not None and hasattr(application.updater, "stop"):
+            await application.updater.stop()
         await application.stop()
         await application.shutdown()
 
@@ -1046,20 +1244,28 @@ async def main() -> None:
     logger.info("=" * 60)
 
     if not TELEGRAM_BOT_TOKEN_UI:
-        raise ValueError("TELEGRAM_BOT_TOKEN_UI is required")
+        raise ValueError("TELEGRAM_BOT_TOKEN_UI (or BOT_TOKEN) is required")
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN_UI).build()
 
     # Commands
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("bank", bank_command))
+    application.add_handler(CommandHandler("my_longs", my_longs_command))
+    application.add_handler(CommandHandler("my_stats", my_stats_command))
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("plans", plans_command))
     application.add_handler(CommandHandler("settings", settings_command))
+    application.add_handler(CommandHandler("autotrade", autotrade_command))
     application.add_handler(CommandHandler("set_po", set_po_command))
     application.add_handler(CommandHandler("signal", request_signal_command))
+    application.add_handler(CommandHandler("long", long_command))
+    application.add_handler(CommandHandler("short", short_command))
 
     # Admin
     application.add_handler(CommandHandler("admin", admin_command))
+    application.add_handler(CommandHandler("god", god_command))
     application.add_handler(CommandHandler("ban_user", ban_user_command))
     application.add_handler(CommandHandler("unban_user", unban_user_command))
     application.add_handler(CommandHandler("add_admin", add_admin_command))
@@ -1068,6 +1274,7 @@ async def main() -> None:
 
     # UI callbacks
     application.add_handler(CallbackQueryHandler(callback_router))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
     telegram_task = asyncio.create_task(run_telegram_bot(application))
 
