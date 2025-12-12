@@ -58,7 +58,24 @@ logger = logging.getLogger(__name__)
 
 
 # --- Env ---
-TELEGRAM_BOT_TOKEN_UI = os.getenv("TELEGRAM_BOT_TOKEN_UI") or os.getenv("BOT_TOKEN")
+def _get_telegram_token() -> Optional[str]:
+    """
+    Telegram bot token.
+
+    Supported env vars (in priority order):
+    - TELEGRAM_BOT_TOKEN_UI (recommended for this repo)
+    - TELEGRAM_BOT_TOKEN (common generic name)
+    - BOT_TOKEN (legacy/short name)
+    """
+
+    for key in ("TELEGRAM_BOT_TOKEN_UI", "TELEGRAM_BOT_TOKEN", "BOT_TOKEN"):
+        value = (os.getenv(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
+TELEGRAM_BOT_TOKEN_UI = _get_telegram_token()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 # ТЗ: SUPABASE_KEY (публичный ключ). Оставляем fallback на старое имя для совместимости.
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
@@ -1244,7 +1261,16 @@ async def main() -> None:
     logger.info("=" * 60)
 
     if not TELEGRAM_BOT_TOKEN_UI:
-        raise ValueError("TELEGRAM_BOT_TOKEN_UI (or BOT_TOKEN) is required")
+        logger.error(
+            "Telegram bot token is not configured.\n\n"
+            "Set ONE of these environment variables (preferred first):\n"
+            "- TELEGRAM_BOT_TOKEN_UI\n"
+            "- TELEGRAM_BOT_TOKEN\n"
+            "- BOT_TOKEN\n\n"
+            "Bothost: Bot settings → Environment Variables → add the variable → Rebuild/Deploy.\n"
+            "Local: create a .env file with TELEGRAM_BOT_TOKEN_UI=... (python-dotenv is enabled).\n"
+        )
+        raise SystemExit(2)
 
     application = Application.builder().token(TELEGRAM_BOT_TOKEN_UI).build()
 

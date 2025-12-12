@@ -18,7 +18,11 @@
 Перейдите в раздел **\"Environment Variables\"** и добавьте переменные:
 
 ```bash
+# Telegram token (use ONE of these; preferred first):
 TELEGRAM_BOT_TOKEN_UI=<your_telegram_bot_token>
+# TELEGRAM_BOT_TOKEN=<your_telegram_bot_token>
+# BOT_TOKEN=<your_telegram_bot_token>
+
 ENCRYPTION_KEY=<your_fernet_key>
 PORT=8000
 
