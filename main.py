@@ -20,12 +20,20 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    BotCommand,
+    BotCommandScopeChat,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+)
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from crypto_utils import encrypt_ssid
@@ -97,6 +105,26 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "po_set": "настроено",
         "po_not_set": "не настроено",
         "menu_title": "📋 Меню",
+        "help_title": "❓ Помощь",
+        "help_body": (
+            "<b>Команды</b>\n"
+            "/start — главный экран\n"
+            "/help — помощь\n"
+            "/bank — банк/оплата подписки\n"
+            "/my_longs — мои Long\n"
+            "/my_stats — моя статистика\n"
+            "/plans — тарифы\n"
+            "/settings — настройки\n\n"
+            "<b>Сигналы</b>\n"
+            "/long — запрос Long-сигнала\n"
+            "/short — запрос Short-сигнала\n"
+        ),
+        "bank_title": "🏦 Банк",
+        "bank_body": "Текущий тариф: <b>{plan}</b>\n\nВыберите подписку для оплаты:",
+        "my_longs_title": "📈 Мои Long",
+        "my_longs_empty": "Пока нет сохранённых Long-сигналов.",
+        "my_stats_title": "📊 Моя статистика",
+        "my_stats_body": "Статистика профиля отображается на главном экране.",
         "plans_title": "💳 Тарифы",
         "plans_body": "Ваш текущий тариф: <b>{plan}</b>\n\nВыберите тариф для апгрейда:",
         "settings_title": "⚙️ Настройки",
@@ -113,12 +141,16 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "set_po_invalid": "❌ Проверьте логин/пароль (логин 3-100, пароль 6-100 символов).",
         "encryption_error": "❌ Ошибка шифрования. Попробуйте позже.",
         "db_error": "❌ Ошибка базы данных. Попробуйте позже.",
-        "signal_requires_plan": "🔒 Запрос сигналов доступен на тарифе Pro/VIP. Откройте «Тарифы».",
+        "signal_requires_plan": "🔒 Запрос сигналов доступен на тарифе Long/Short/VIP. Откройте «Тарифы».",
+        "signal_requires_plan_long": "🔒 Long-сигналы доступны на тарифе Long/VIP.",
+        "signal_requires_plan_short": "🔒 Short-сигналы доступны на тарифе Short/VIP.",
         "signal_requires_po": "❌ Сначала настройте PO через /set_po.",
         "signal_sent": "⏳ Запрос на сигнал отправлен. Ожидайте ответ от ядра.",
         "signal_supabase_off": "⚠️ Supabase не настроен. Запрос сигналов временно недоступен.",
         "plan_free": "Free",
         "plan_pro": "Pro",
+        "plan_long": "Long",
+        "plan_short": "Short",
         "plan_vip": "VIP",
         "pay_created": (
             "💳 Создан крипто-платёж для тарифа <b>{plan}</b>\n"
@@ -129,6 +161,17 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "pay_check_pending": "⏳ Платёж пока не подтверждён. Попробуйте позже.",
         "pay_check_paid": "✅ Платёж подтверждён! Тариф обновлён на <b>{plan}</b>.",
         "admin_denied": "🚫 Команда доступна только ADMIN_USER_ID.",
+        "admin_panel_title": "🛡️ <b>Admin Panel</b>",
+        "admin_btn_ban": "🚫 Забанить пользователя",
+        "admin_btn_unban": "✅ Разбанить пользователя",
+        "admin_btn_set_plan": "💳 Выдать подписку пользователю",
+        "admin_btn_reset": "♻️ Сбросить пользователя",
+        "admin_btn_give_me": "🧪 Выдать себе подписку (тест)",
+        "admin_prompt_ban": "Введите ID пользователя для бана:",
+        "admin_prompt_unban": "Введите ID пользователя для разбана:",
+        "admin_prompt_reset": "Введите ID пользователя для сброса:",
+        "admin_prompt_set_plan": "Введите: <code>user_id plan</code>\nПример: <code>123456789 vip</code>\nДоступные: free, long, short, vip",
+        "admin_bad_input": "❌ Неверный формат. Попробуйте ещё раз.",
         "admin_help": (
             "🛡️ <b>Admin</b>\n"
             "/ban_user <id>\n"
@@ -139,6 +182,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         ),
         "admin_done": "✅ Готово.",
         "admin_bad_args": "❌ Неверные аргументы. Пример: /ban_user 123456",
+        "god_done": "✅ VIP-статус и права администратора выданы бессрочно.",
     },
     "en": {
         "banned": "🚫 Access restricted. Contact support.",
@@ -154,6 +198,26 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "po_set": "configured",
         "po_not_set": "not configured",
         "menu_title": "📋 Menu",
+        "help_title": "❓ Help",
+        "help_body": (
+            "<b>Commands</b>\n"
+            "/start — home\n"
+            "/help — help\n"
+            "/bank — bank/subscription payments\n"
+            "/my_longs — my Longs\n"
+            "/my_stats — my stats\n"
+            "/plans — plans\n"
+            "/settings — settings\n\n"
+            "<b>Signals</b>\n"
+            "/long — request Long signal\n"
+            "/short — request Short signal\n"
+        ),
+        "bank_title": "🏦 Bank",
+        "bank_body": "Current plan: <b>{plan}</b>\n\nChoose a subscription to pay:",
+        "my_longs_title": "📈 My Longs",
+        "my_longs_empty": "No saved Long signals yet.",
+        "my_stats_title": "📊 My stats",
+        "my_stats_body": "Profile stats are shown on the Home screen.",
         "plans_title": "💳 Plans",
         "plans_body": "Current plan: <b>{plan}</b>\n\nChoose a plan to upgrade:",
         "settings_title": "⚙️ Settings",
@@ -170,12 +234,16 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "set_po_invalid": "❌ Check login/password length.",
         "encryption_error": "❌ Encryption error. Try again later.",
         "db_error": "❌ Database error. Try again later.",
-        "signal_requires_plan": "🔒 Signals require Pro/VIP. Open Plans.",
+        "signal_requires_plan": "🔒 Signals require Long/Short/VIP. Open Plans.",
+        "signal_requires_plan_long": "🔒 Long signals require Long/VIP.",
+        "signal_requires_plan_short": "🔒 Short signals require Short/VIP.",
         "signal_requires_po": "❌ Configure PO first via /set_po.",
         "signal_sent": "⏳ Signal request sent. Please wait.",
         "signal_supabase_off": "⚠️ Supabase not configured. Signals are unavailable.",
         "plan_free": "Free",
         "plan_pro": "Pro",
+        "plan_long": "Long",
+        "plan_short": "Short",
         "plan_vip": "VIP",
         "pay_created": (
             "💳 Crypto payment created for <b>{plan}</b>\n"
@@ -186,6 +254,17 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "pay_check_pending": "⏳ Payment is still pending. Try later.",
         "pay_check_paid": "✅ Payment confirmed! Plan updated to <b>{plan}</b>.",
         "admin_denied": "🚫 This command is restricted to ADMIN_USER_ID.",
+        "admin_panel_title": "🛡️ <b>Admin Panel</b>",
+        "admin_btn_ban": "🚫 Ban user",
+        "admin_btn_unban": "✅ Unban user",
+        "admin_btn_set_plan": "💳 Set user plan",
+        "admin_btn_reset": "♻️ Reset user",
+        "admin_btn_give_me": "🧪 Give me a plan (test)",
+        "admin_prompt_ban": "Send target user ID to ban:",
+        "admin_prompt_unban": "Send target user ID to unban:",
+        "admin_prompt_reset": "Send target user ID to reset:",
+        "admin_prompt_set_plan": "Send: <code>user_id plan</code>\nExample: <code>123456789 vip</code>\nAllowed: free, long, short, vip",
+        "admin_bad_input": "❌ Invalid format. Try again.",
         "admin_help": (
             "🛡️ <b>Admin</b>\n"
             "/ban_user <id>\n"
@@ -196,6 +275,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         ),
         "admin_done": "✅ Done.",
         "admin_bad_args": "❌ Bad args. Example: /ban_user 123456",
+        "god_done": "✅ VIP access and admin privileges granted permanently.",
     },
 }
 
@@ -343,9 +423,40 @@ async def render_screen(*, user_id: int, screen: str) -> tuple[str, InlineKeyboa
         text = f"<b>{tr(lang, 'menu_title')}</b>"
         kb_rows = [
             [InlineKeyboardButton(tr(lang, "btn_signal"), callback_data="action:signal")],
+            [InlineKeyboardButton(tr(lang, "help_title"), callback_data="nav:help")],
+            [InlineKeyboardButton(tr(lang, "bank_title"), callback_data="nav:bank")],
             [InlineKeyboardButton(tr(lang, "btn_plans"), callback_data="nav:plans")],
             [InlineKeyboardButton(tr(lang, "btn_settings"), callback_data="nav:settings")],
         ]
+        kb_rows.extend(_nav_kb(lang, show_back, show_home))
+        return text, InlineKeyboardMarkup(kb_rows)
+
+    if screen == "help":
+        text = f"<b>{tr(lang, 'help_title')}</b>\n\n" + tr(lang, "help_body")
+        kb_rows: list[list[InlineKeyboardButton]] = []
+        kb_rows.extend(_nav_kb(lang, show_back, show_home))
+        return text, InlineKeyboardMarkup(kb_rows)
+
+    if screen == "bank":
+        text = f"<b>{tr(lang, 'bank_title')}</b>\n\n" + tr(lang, "bank_body", plan=plan)
+        kb_rows = [
+            [InlineKeyboardButton(tr(lang, "plan_long"), callback_data="plan:select:long")],
+            [InlineKeyboardButton(tr(lang, "plan_short"), callback_data="plan:select:short")],
+            [InlineKeyboardButton(tr(lang, "plan_vip"), callback_data="plan:select:vip")],
+            [InlineKeyboardButton(tr(lang, "btn_plans"), callback_data="nav:plans")],
+        ]
+        kb_rows.extend(_nav_kb(lang, show_back, show_home))
+        return text, InlineKeyboardMarkup(kb_rows)
+
+    if screen == "my_longs":
+        text = f"<b>{tr(lang, 'my_longs_title')}</b>\n\n" + tr(lang, "my_longs_empty")
+        kb_rows: list[list[InlineKeyboardButton]] = []
+        kb_rows.extend(_nav_kb(lang, show_back, show_home))
+        return text, InlineKeyboardMarkup(kb_rows)
+
+    if screen == "my_stats":
+        text = f"<b>{tr(lang, 'my_stats_title')}</b>\n\n" + tr(lang, "my_stats_body")
+        kb_rows: list[list[InlineKeyboardButton]] = []
         kb_rows.extend(_nav_kb(lang, show_back, show_home))
         return text, InlineKeyboardMarkup(kb_rows)
 
@@ -353,7 +464,8 @@ async def render_screen(*, user_id: int, screen: str) -> tuple[str, InlineKeyboa
         text = f"<b>{tr(lang, 'plans_title')}</b>\n\n" + tr(lang, "plans_body", plan=plan)
         kb_rows = [
             [InlineKeyboardButton(tr(lang, "plan_free"), callback_data="plan:select:free")],
-            [InlineKeyboardButton(tr(lang, "plan_pro"), callback_data="plan:select:pro")],
+            [InlineKeyboardButton(tr(lang, "plan_long"), callback_data="plan:select:long")],
+            [InlineKeyboardButton(tr(lang, "plan_short"), callback_data="plan:select:short")],
             [InlineKeyboardButton(tr(lang, "plan_vip"), callback_data="plan:select:vip")],
         ]
         kb_rows.extend(_nav_kb(lang, show_back, show_home))
@@ -384,12 +496,12 @@ async def render_screen(*, user_id: int, screen: str) -> tuple[str, InlineKeyboa
 
 
 # --- Supabase integration (external) ---
-async def create_signal_request(user_id: int) -> bool:
+async def create_signal_request(user_id: int, request_type: str = "latest_signal") -> bool:
     if not supabase:
         return False
     # Внешние данные (не профиль пользователя)
     supabase.table("signal_requests").insert(
-        {"user_id": user_id, "request_type": "latest_signal", "status": "pending"}
+        {"user_id": user_id, "request_type": request_type, "status": "pending"}
     ).execute()
     return True
 
@@ -473,6 +585,55 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _delete_message_safe(context, chat_id, update.message.message_id)
 
     await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="home", push_current=False, clear_stack=True)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+    await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="help")
+
+
+async def bank_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+    await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="bank")
+
+
+async def my_longs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+    await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="my_longs")
+
+
+async def my_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+    # ТЗ: главная статистика — на домашнем экране
+    await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="home", push_current=False)
+
+
+async def long_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+    await _handle_signal(user_id=user_id, chat_id=chat_id, context=context, request_type="long")
+
+
+async def short_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    if update.message:
+        await _delete_message_safe(context, chat_id, update.message.message_id)
+    await _handle_signal(user_id=user_id, chat_id=chat_id, context=context, request_type="short")
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -575,12 +736,12 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data.startswith("nav:"):
         screen = data.split(":", 1)[1]
-        if screen in {"menu", "plans", "settings", "home"}:
+        if screen in {"menu", "plans", "settings", "home", "help", "bank", "my_longs", "my_stats"}:
             await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen=screen)
         return
 
     if data == "action:signal":
-        await _handle_signal(user_id=user_id, chat_id=chat_id, context=context)
+        await _handle_signal(user_id=user_id, chat_id=chat_id, context=context, request_type="latest_signal")
         return
 
     if data.startswith("set:lang:"):
@@ -597,6 +758,41 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="settings", push_current=False)
         return
 
+    if data.startswith("admin:"):
+        profile = await get_user_profile(user_id)
+        lang = profile.get("language", "ru")
+
+        if not _is_root_admin(user_id):
+            await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_denied"))
+            return
+
+        if data.startswith("admin:give:"):
+            plan = data.split(":", 2)[2].strip().lower()
+            if plan in {"long", "short", "vip"}:
+                await update_user_profile(user_id, plan=plan, is_admin=1, is_banned=0)
+                await set_user_state(user_id, "admin_flow", None)
+                await send_ui(context=context, user_id=user_id, chat_id=chat_id, text=tr(lang, "admin_done"))
+                await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="home", push_current=False, clear_stack=True)
+            return
+
+        if data.startswith("admin:flow:"):
+            action = data.split(":", 2)[2].strip()
+            await set_user_state(user_id, "admin_flow", {"action": action})
+            prompt_key = {
+                "ban": "admin_prompt_ban",
+                "unban": "admin_prompt_unban",
+                "reset": "admin_prompt_reset",
+                "set_plan": "admin_prompt_set_plan",
+            }.get(action, "admin_bad_input")
+            await send_ui(
+                context=context,
+                user_id=user_id,
+                chat_id=chat_id,
+                text=tr(lang, prompt_key),
+                keyboard=InlineKeyboardMarkup(_nav_kb(lang, show_back=False, show_home=True)),
+            )
+            return
+
     if data.startswith("plan:select:"):
         plan = data.split(":", 2)[2]
         profile = await get_user_profile(user_id)
@@ -607,7 +803,12 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="plans", push_current=False)
             return
 
-        amount = 10.0 if plan == "pro" else 25.0
+        plan = str(plan).lower()
+        if plan not in {"long", "short", "vip"}:
+            await show_screen(context=context, user_id=user_id, chat_id=chat_id, screen="plans", push_current=False)
+            return
+
+        amount = 10.0 if plan in {"long", "short"} else 25.0
         payment = create_crypto_payment(user_id=user_id, plan=plan, amount=amount, currency="USDT")
         await set_user_state(
             user_id,
