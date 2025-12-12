@@ -2,15 +2,15 @@
 import os
 from cryptography.fernet import Fernet
 import logging
-from dotenv import load_dotenv
 from typing import Optional
 
-load_dotenv()
 logger = logging.getLogger(__name__)
 
 def get_encryption_key() -> str:
     """Получает ключ шифрования из переменных окружения."""
-    key = os.getenv("ENCRYPTION_KEY")
+    # NOTE: Не вызываем load_dotenv() здесь, чтобы модуль не имел скрытых side-effects.
+    # Точку загрузки окружения контролирует entrypoint (main.py / test_components.py).
+    key = (os.getenv("ENCRYPTION_KEY") or "").strip()
     if not key:
         logger.error("🚫 ENCRYPTION_KEY не установлен в переменных окружения!")
         raise ValueError("ENCRYPTION_KEY is required")

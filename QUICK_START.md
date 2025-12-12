@@ -18,10 +18,8 @@
 Перейдите в раздел **\"Environment Variables\"** и добавьте переменные:
 
 ```bash
-# Telegram token (use ONE of these; preferred first):
-TELEGRAM_BOT_TOKEN=<your_telegram_bot_token>
-# BOT_TOKEN=<your_telegram_bot_token>
-# TELEGRAM_BOT_TOKEN_UI=<your_telegram_bot_token>
+# Telegram token (canonical)
+BOT_TOKEN=<your_telegram_bot_token>
 
 ENCRYPTION_KEY=<your_fernet_key>
 PORT=8000
@@ -104,7 +102,7 @@ INFO:     Uvicorn running on http://0.0.0.0:8000
 ### ❌ Бот не отвечает в Telegram
 
 **Решение:** 
-1. Проверьте переменную `TELEGRAM_BOT_TOKEN` (или `BOT_TOKEN` / `TELEGRAM_BOT_TOKEN_UI`)
+1. Проверьте переменную `BOT_TOKEN`
 2. Убедитесь, что бот запущен (статус "Running" на Bothost)
 3. Проверьте логи на наличие ошибок
 

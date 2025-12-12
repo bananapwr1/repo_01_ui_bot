@@ -67,9 +67,9 @@ def test_env_variables():
     
     load_dotenv('.env')
     
-    # Telegram token can be provided under different env var names.
-    # Keep the same priority as in main.py.
-    telegram_token_keys = ("TELEGRAM_BOT_TOKEN", "BOT_TOKEN", "TELEGRAM_BOT_TOKEN_UI")
+    # Canonical token name used by the project
+    canonical_token_key = "BOT_TOKEN"
+    deprecated_token_keys = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN_UI")
 
     required_vars = {
         'ENCRYPTION_KEY': 'Ключ шифрования (Fernet)',
@@ -85,35 +85,40 @@ def test_env_variables():
     tests_passed = 0
     tests_total = len(required_vars) + 1  # +1 for telegram token
 
-    # Telegram token (pass if ANY is set, show which one is used)
-    token_value = None
-    token_key = None
-    for k in telegram_token_keys:
-        v = os.getenv(k)
-        if v:
-            token_value = v
-            token_key = k
-            break
-
-    if token_value:
-        print_success(f"{token_key}: Токен Telegram-бота [{token_value[:20]}...]")
+    # Telegram token: require BOT_TOKEN, warn on deprecated aliases
+    canonical_value = (os.getenv(canonical_token_key) or "").strip()
+    if canonical_value:
+        print_success(f"{canonical_token_key}: Токен Telegram-бота [set, len={len(canonical_value)}]")
         tests_passed += 1
     else:
-        print_error("TELEGRAM_BOT_TOKEN/BOT_TOKEN/TELEGRAM_BOT_TOKEN_UI: НЕ УСТАНОВЛЕН (Токен Telegram-бота)")
+        # If token is present only under deprecated keys, emit a clear hint.
+        deprecated_found = None
+        for k in deprecated_token_keys:
+            if (os.getenv(k) or "").strip():
+                deprecated_found = k
+                break
+        if deprecated_found:
+            print_error(
+                f"{canonical_token_key}: НЕ УСТАНОВЛЕН. Токен найден в deprecated переменной {deprecated_found} — "
+                f"переименуйте её в {canonical_token_key}."
+            )
+        else:
+            print_error(f"{canonical_token_key}: НЕ УСТАНОВЛЕН (Токен Telegram-бота)")
 
     for var, desc in required_vars.items():
-        value = os.getenv(var)
+        value = (os.getenv(var) or "").strip()
         if value:
-            print_success(f"{var}: {desc} [{value[:20]}...]")
+            # Не печатаем секреты целиком в терминал
+            print_success(f"{var}: {desc} [set, len={len(value)}]")
             tests_passed += 1
         else:
             print_error(f"{var}: НЕ УСТАНОВЛЕН ({desc})")
 
     # Опциональные переменные не должны валить тесты
     for var, desc in optional_vars.items():
-        value = os.getenv(var)
+        value = (os.getenv(var) or "").strip()
         if value:
-            print_success(f"{var}: {desc} [{value[:20]}...]")
+            print_success(f"{var}: {desc} [set]")
         else:
             print_warning(f"{var}: НЕ УСТАНОВЛЕН ({desc})")
     
