@@ -58,24 +58,24 @@ logger = logging.getLogger(__name__)
 
 
 # --- Env ---
-def _get_telegram_token() -> Optional[str]:
+def _get_telegram_token() -> tuple[Optional[str], Optional[str]]:
     """
     Telegram bot token.
 
     Supported env vars (in priority order):
-    - TELEGRAM_BOT_TOKEN_UI (recommended for this repo)
     - TELEGRAM_BOT_TOKEN (common generic name)
     - BOT_TOKEN (legacy/short name)
+    - TELEGRAM_BOT_TOKEN_UI (custom name used in some setups)
     """
 
-    for key in ("TELEGRAM_BOT_TOKEN_UI", "TELEGRAM_BOT_TOKEN", "BOT_TOKEN"):
+    for key in ("TELEGRAM_BOT_TOKEN", "BOT_TOKEN", "TELEGRAM_BOT_TOKEN_UI"):
         value = (os.getenv(key) or "").strip()
         if value:
-            return value
-    return None
+            return value, key
+    return None, None
 
 
-TELEGRAM_BOT_TOKEN_UI = _get_telegram_token()
+TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_TOKEN_ENV = _get_telegram_token()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 # ТЗ: SUPABASE_KEY (публичный ключ). Оставляем fallback на старое имя для совместимости.
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
@@ -572,7 +572,8 @@ async def health_check() -> Dict[str, Any]:
 
     return {
         "status": "healthy",
-        "telegram_bot": "configured" if TELEGRAM_BOT_TOKEN_UI else "not_configured",
+        "telegram_bot": "configured" if TELEGRAM_BOT_TOKEN else "not_configured",
+        "telegram_token_env": TELEGRAM_BOT_TOKEN_ENV or "not_set",
         "supabase": supabase_status,
         "encryption": "enabled" if os.getenv("ENCRYPTION_KEY") else "not_configured",
         "sqlite_db": "enabled",
@@ -1260,19 +1261,22 @@ async def main() -> None:
     logger.info("🚀 Starting UI Bot (Telegram + API)")
     logger.info("=" * 60)
 
-    if not TELEGRAM_BOT_TOKEN_UI:
+    if TELEGRAM_BOT_TOKEN_ENV:
+        logger.info("✅ Telegram token loaded from env var: %s", TELEGRAM_BOT_TOKEN_ENV)
+
+    if not TELEGRAM_BOT_TOKEN:
         logger.error(
             "Telegram bot token is not configured.\n\n"
             "Set ONE of these environment variables (preferred first):\n"
-            "- TELEGRAM_BOT_TOKEN_UI\n"
             "- TELEGRAM_BOT_TOKEN\n"
             "- BOT_TOKEN\n\n"
+            "- TELEGRAM_BOT_TOKEN_UI\n\n"
             "Bothost: Bot settings → Environment Variables → add the variable → Rebuild/Deploy.\n"
-            "Local: create a .env file with TELEGRAM_BOT_TOKEN_UI=... (python-dotenv is enabled).\n"
+            "Local: create a .env file with TELEGRAM_BOT_TOKEN=... (python-dotenv is enabled).\n"
         )
         raise SystemExit(2)
 
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN_UI).build()
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Commands
     application.add_handler(CommandHandler("start", start_command))
