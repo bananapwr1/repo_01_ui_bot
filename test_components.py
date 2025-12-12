@@ -67,10 +67,13 @@ def test_env_variables():
     
     load_dotenv('.env')
     
+    # Telegram token can be provided under different env var names.
+    # Keep the same priority as in main.py.
+    telegram_token_keys = ("TELEGRAM_BOT_TOKEN", "BOT_TOKEN", "TELEGRAM_BOT_TOKEN_UI")
+
     required_vars = {
-        'TELEGRAM_BOT_TOKEN_UI': 'Токен Telegram-бота',
         'ENCRYPTION_KEY': 'Ключ шифрования (Fernet)',
-        'PORT': 'Порт API-сервера'
+        'PORT': 'Порт API-сервера',
     }
 
     optional_vars = {
@@ -80,8 +83,24 @@ def test_env_variables():
     }
     
     tests_passed = 0
-    tests_total = len(required_vars)
-    
+    tests_total = len(required_vars) + 1  # +1 for telegram token
+
+    # Telegram token (pass if ANY is set, show which one is used)
+    token_value = None
+    token_key = None
+    for k in telegram_token_keys:
+        v = os.getenv(k)
+        if v:
+            token_value = v
+            token_key = k
+            break
+
+    if token_value:
+        print_success(f"{token_key}: Токен Telegram-бота [{token_value[:20]}...]")
+        tests_passed += 1
+    else:
+        print_error("TELEGRAM_BOT_TOKEN/BOT_TOKEN/TELEGRAM_BOT_TOKEN_UI: НЕ УСТАНОВЛЕН (Токен Telegram-бота)")
+
     for var, desc in required_vars.items():
         value = os.getenv(var)
         if value:
