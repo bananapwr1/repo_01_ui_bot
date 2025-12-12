@@ -17,10 +17,13 @@ import datetime as _dt
 import json
 import os
 import sqlite3
+import threading
 from typing import Any, Dict, Optional
 
 
 DB_PATH = os.getenv("UI_BOT_DB_PATH") or os.path.join(os.path.dirname(__file__), "ui_bot.sqlite3")
+_DB_INIT_LOCK = threading.Lock()
+_DB_INITIALIZED = False
 
 
 def _utcnow_iso() -> str:
@@ -28,15 +31,36 @@ def _utcnow_iso() -> str:
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    # timeout: helps with short bursts of concurrent writes
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    # IMPORTANT: SQLite foreign keys are off by default
+    try:
+        conn.execute("PRAGMA foreign_keys = ON;")
+    except Exception:
+        pass
     return conn
 
 
 def init_db() -> None:
     """Создаёт таблицы SQLite (если их ещё нет)."""
+    global _DB_INITIALIZED
+    if _DB_INITIALIZED:
+        return
+    with _DB_INIT_LOCK:
+        if _DB_INITIALIZED:
+            return
+
     conn = _connect()
     cur = conn.cursor()
+
+    # Better concurrency characteristics for a bot workload
+    try:
+        cur.execute("PRAGMA journal_mode = WAL;")
+        cur.execute("PRAGMA synchronous = NORMAL;")
+    except Exception:
+        # Not fatal (e.g., some FS may not support WAL)
+        pass
 
     # Профиль/флаги/последнее UI-сообщение
     cur.execute(
@@ -86,6 +110,7 @@ def init_db() -> None:
 
     conn.commit()
     conn.close()
+    _DB_INITIALIZED = True
 
 
 async def ensure_user(user_id: int) -> None:

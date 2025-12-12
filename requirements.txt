@@ -1,7 +1,7 @@
 # repo_01_ui_bot/requirements.txt
 python-telegram-bot==20.7
-python-dotenv
-supabase
-cryptography
-fastapi
-uvicorn
+python-dotenv==1.0.1
+supabase==2.6.0
+cryptography==43.0.3
+fastapi==0.110.3
+uvicorn==0.30.6
